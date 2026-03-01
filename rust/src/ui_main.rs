@@ -345,7 +345,8 @@ struct JodugaApp {
 
     // UI state
     search_text: String,
-    pan: egui::Vec2,       // canvas pan offset (screen = world + pan)
+    pan: egui::Vec2,       // canvas pan offset
+    zoom: f32,             // canvas zoom level (1.0 = 100%)
     show_settings: bool,
     sample_rate: u32,
     buffer_size: u32,
@@ -399,6 +400,7 @@ impl JodugaApp {
             waveform: Arc::new(Mutex::new(vec![0.0f32; 512])),
             search_text: String::new(),
             pan: egui::Vec2::ZERO,
+            zoom: 1.0,
             show_settings: false,
             sample_rate: 48000,
             buffer_size: 256,
@@ -596,7 +598,7 @@ impl eframe::App for JodugaApp {
 
         // ── Top toolbar ─────────────────────────────────────────────
         egui::TopBottomPanel::top("toolbar")
-            .frame(egui::Frame::none().fill(SURFACE).inner_margin(egui::Margin::same(8)))
+            .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(8)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(egui::RichText::new("🎵 Joduga").strong().color(ACCENT));
@@ -631,7 +633,7 @@ impl eframe::App for JodugaApp {
         // ── Bottom waveform panel ───────────────────────────────────
         egui::TopBottomPanel::bottom("waveform_panel")
             .exact_height(100.0)
-            .frame(egui::Frame::none().fill(SURFACE).inner_margin(egui::Margin::same(4)))
+            .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(4)))
             .show(ctx, |ui| {
                 let wf_data = self.waveform.lock().unwrap().clone();
                 let points: PlotPoints = wf_data
@@ -655,7 +657,7 @@ impl eframe::App for JodugaApp {
         // ── Left panel: node catalog ────────────────────────────────
         egui::SidePanel::left("node_catalog")
             .default_width(190.0)
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
+            .frame(egui::Frame::new().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
             .show(ctx, |ui| {
                 ui.heading(egui::RichText::new("Node Catalog").color(ACCENT));
                 ui.separator();
@@ -719,7 +721,7 @@ impl eframe::App for JodugaApp {
         if self.show_settings {
             egui::SidePanel::right("settings_panel")
                 .default_width(210.0)
-                .frame(egui::Frame::none().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
+                .frame(egui::Frame::new().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
                 .show(ctx, |ui| {
                     ui.heading(egui::RichText::new("⚙ Settings").color(ACCENT));
                     ui.separator();
@@ -754,6 +756,10 @@ impl eframe::App for JodugaApp {
                     ui.label(egui::RichText::new("Graph Info").strong().color(egui::Color32::LIGHT_GRAY));
                     ui.label(format!("Nodes: {}", self.nodes.len()));
                     ui.label(format!("Connections: {}", self.wires.len()));
+                    ui.label(format!("Zoom: {:.0}%", self.zoom * 100.0));
+                    if ui.small_button("Reset Zoom").clicked() {
+                        self.zoom = 1.0;
+                    }
 
                     ui.add_space(10.0);
                     ui.separator();
@@ -762,8 +768,11 @@ impl eframe::App for JodugaApp {
                         "• Left panel or right-click → add nodes\n\
                          • Click green ● then cyan ● → connect\n\
                          • Middle-drag or Shift+drag → pan\n\
-                         • Escape → cancel connection\n\
-                         • ✖ button → remove node"
+                         • Ctrl+scroll → zoom in/out\n\
+                         • Drag title bar → move node\n\
+                         • Drag node edge → resize\n\
+                         • ✖ or close → remove node\n\
+                         • Escape → cancel connection"
                     ).small().color(egui::Color32::GRAY));
                 });
         }
@@ -771,7 +780,7 @@ impl eframe::App for JodugaApp {
         // ── Central canvas ──────────────────────────────────────────
         let mut saved_canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(BG))
+            .frame(egui::Frame::new().fill(BG))
             .show(ctx, |ui| {
                 let canvas_rect = ui.max_rect();
                 saved_canvas_rect = canvas_rect;
@@ -790,11 +799,25 @@ impl eframe::App for JodugaApp {
                     self.pan += canvas_resp.drag_delta();
                 }
 
-                // Scroll wheel to pan the canvas
+                // Scroll: Ctrl+scroll = zoom, normal scroll = pan
                 if canvas_resp.hovered() {
-                    let scroll = ctx.input(|i| i.smooth_scroll_delta);
-                    if scroll != egui::Vec2::ZERO {
-                        self.pan += scroll;
+                    let ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                    let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
+                    if ctrl && scroll_y != 0.0 {
+                        let mouse_pos = ctx.input(|i| {
+                            i.pointer.hover_pos().unwrap_or(canvas_rect.center())
+                        });
+                        let mwx = (mouse_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom;
+                        let mwy = (mouse_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom;
+                        let zd = if scroll_y > 0.0 { 1.1 } else { 1.0 / 1.1 };
+                        self.zoom = (self.zoom * zd).clamp(0.15, 5.0);
+                        self.pan.x = mouse_pos.x - canvas_rect.min.x - mwx * self.zoom;
+                        self.pan.y = mouse_pos.y - canvas_rect.min.y - mwy * self.zoom;
+                    } else {
+                        let scroll = ctx.input(|i| i.smooth_scroll_delta);
+                        if scroll != egui::Vec2::ZERO {
+                            self.pan += scroll;
+                        }
                     }
                 }
 
@@ -803,8 +826,8 @@ impl eframe::App for JodugaApp {
                     .interact_pointer_pos()
                     .unwrap_or(canvas_rect.center());
                 let click_world_pos = egui::pos2(
-                    click_screen_pos.x - canvas_rect.min.x - self.pan.x,
-                    click_screen_pos.y - canvas_rect.min.y - self.pan.y,
+                    (click_screen_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom,
+                    (click_screen_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom,
                 );
 
                 canvas_resp.context_menu(|ui| {
@@ -845,7 +868,7 @@ impl eframe::App for JodugaApp {
 
                 // ── Draw grid ───────────────────────────────────────
                 if self.show_grid {
-                    let grid_spacing = 40.0f32;
+                    let grid_spacing = 40.0f32 * self.zoom;
                     let grid_color = egui::Color32::from_rgba_premultiplied(50, 50, 70, 30);
                     let stroke = egui::Stroke::new(0.5, grid_color);
 
@@ -910,11 +933,12 @@ impl eframe::App for JodugaApp {
                 }
             });
 
-        // ── Render nodes as draggable Areas ─────────────────────────
+        // ── Render nodes as Windows (draggable, resizable) ────────
         let pending = self.pending_wire;
         let is_running = self.running;
         let cat = &self.catalog;
         let pan = self.pan;
+        let zoom = self.zoom;
         let canvas_rect = saved_canvas_rect;
 
         for node in &mut self.nodes {
@@ -922,165 +946,151 @@ impl eframe::App for JodugaApp {
             let tmpl = &cat[node.template_idx];
             let node_color = tmpl.color;
 
-            // Screen position = canvas origin + world position + pan
+            // Screen position = canvas origin + world position * zoom + pan
             let screen_pos = egui::pos2(
-                canvas_rect.min.x + node.world_pos.x + pan.x,
-                canvas_rect.min.y + node.world_pos.y + pan.y,
+                canvas_rect.min.x + node.world_pos.x * zoom + pan.x,
+                canvas_rect.min.y + node.world_pos.y * zoom + pan.y,
             );
 
-            let area_response = egui::Area::new(egui::Id::new(("node_area", node_id)))
-                .default_pos(screen_pos)
-                .current_pos(screen_pos)
-                .movable(false)
-                .constrain(false)
-                .order(egui::Order::Middle)
-                .interactable(true)
-                .show(ctx, |ui| {
-                    ui.set_clip_rect(canvas_rect);
-                    egui::Frame::none()
-                        .fill(SURFACE)
-                        .stroke(egui::Stroke::new(1.5, node_color))
-                        .corner_radius(6.0)
-                        .inner_margin(egui::Margin::same(8))
-                        .show(ui, |ui| {
-                            ui.set_min_width(NODE_WIDTH);
-                            ui.set_max_width(NODE_WIDTH);
+            let mut node_open = true;
+            let win_id = egui::Id::new(("node_win", node_id));
 
-                            // ── Header row ──────────────────────────
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{} {}", tmpl.icon, tmpl.name))
-                                        .strong()
-                                        .color(node_color),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if !is_running {
-                                            if ui.small_button(
-                                                egui::RichText::new("✖").color(RED),
-                                            ).clicked() {
-                                                actions.push(UiAction::RemoveNode(node_id));
-                                            }
-                                        }
-                                        ui.label(
-                                            egui::RichText::new(format!("#{node_id}"))
-                                                .small()
-                                                .color(egui::Color32::DARK_GRAY),
-                                        );
-                                    },
-                                );
-                            });
+            let win_resp = egui::Window::new(
+                egui::RichText::new(format!("{} {} #{}", tmpl.icon, tmpl.name, node_id))
+                    .strong()
+                    .color(node_color),
+            )
+            .id(win_id)
+            .current_pos(screen_pos)
+            .default_width(NODE_WIDTH)
+            .movable(!is_running)
+            .resizable(!is_running)
+            .collapsible(false)
+            .title_bar(true)
+            .constrain(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(SURFACE)
+                    .stroke(egui::Stroke::new(2.0, node_color))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::same(8)),
+            )
+            .open(&mut node_open)
+            .show(ctx, |ui| {
+                // ── Input ports ─────────────────────────
+                for port_idx in 0..tmpl.num_inputs {
+                    ui.horizontal(|ui| {
+                        let (port_rect, port_resp) = ui.allocate_exact_size(
+                            egui::vec2(PORT_SIZE, PORT_SIZE),
+                            egui::Sense::click(),
+                        );
+                        let port_color = if pending.is_some() && port_resp.hovered() {
+                            egui::Color32::WHITE
+                        } else {
+                            ACCENT
+                        };
+                        ui.painter()
+                            .circle_filled(port_rect.center(), PORT_RADIUS, port_color);
+                        if pending.is_some() && port_resp.hovered() {
+                            ui.painter().circle_stroke(
+                                port_rect.center(),
+                                PORT_RADIUS + 3.0,
+                                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                            );
+                        }
+                        ui.label(egui::RichText::new(format!("In {port_idx}")).small());
 
-                            ui.separator();
+                        if port_idx < node.input_port_screen.len() {
+                            node.input_port_screen[port_idx] = Some(port_rect.center());
+                        }
 
-                            // ── Input ports ─────────────────────────
-                            for port_idx in 0..tmpl.num_inputs {
-                                ui.horizontal(|ui| {
-                                    let (port_rect, port_resp) = ui.allocate_exact_size(
-                                        egui::vec2(PORT_SIZE, PORT_SIZE),
-                                        egui::Sense::click(),
-                                    );
-                                    let port_color = if pending.is_some() && port_resp.hovered() {
-                                        egui::Color32::WHITE
-                                    } else {
-                                        ACCENT
-                                    };
-                                    ui.painter().circle_filled(port_rect.center(), PORT_RADIUS, port_color);
-                                    if pending.is_some() && port_resp.hovered() {
-                                        ui.painter().circle_stroke(
-                                            port_rect.center(),
-                                            PORT_RADIUS + 3.0,
-                                            egui::Stroke::new(1.5, egui::Color32::WHITE),
-                                        );
-                                    }
-                                    ui.label(egui::RichText::new(format!("In {port_idx}")).small());
-
-                                    // Store screen position for wire drawing
-                                    if port_idx < node.input_port_screen.len() {
-                                        node.input_port_screen[port_idx] = Some(port_rect.center());
-                                    }
-
-                                    // Complete a pending connection
-                                    if port_resp.clicked() {
-                                        if let Some((from_id, from_port)) = pending {
-                                            if from_id != node_id {
-                                                actions.push(UiAction::FinishWire {
-                                                    from_node: from_id,
-                                                    from_port,
-                                                    to_node: node_id,
-                                                    to_port: port_idx,
-                                                });
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-
-                            // ── Parameters ──────────────────────────
-                            for (pi, pdef) in tmpl.params.iter().enumerate() {
-                                if pi >= node.param_values.len() {
-                                    break;
-                                }
-                                let mut val = node.param_values[pi];
-                                let mut slider = egui::Slider::new(&mut val, pdef.min..=pdef.max);
-                                if pdef.log {
-                                    slider = slider.logarithmic(true);
-                                }
-                                if !pdef.suffix.is_empty() {
-                                    slider = slider.suffix(format!(" {}", pdef.suffix));
-                                }
-                                slider = slider.text(pdef.name);
-                                if ui.add(slider).changed() {
-                                    node.param_values[pi] = val;
-                                    actions.push(UiAction::ParamChanged(
-                                        node_id as u32,
-                                        pdef.hash,
-                                        val,
-                                    ));
+                        if port_resp.clicked() {
+                            if let Some((from_id, from_port)) = pending {
+                                if from_id != node_id {
+                                    actions.push(UiAction::FinishWire {
+                                        from_node: from_id,
+                                        from_port,
+                                        to_node: node_id,
+                                        to_port: port_idx,
+                                    });
                                 }
                             }
+                        }
+                    });
+                }
 
-                            // ── Output ports ────────────────────────
-                            for port_idx in 0..tmpl.num_outputs {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let (port_rect, port_resp) = ui.allocate_exact_size(
-                                            egui::vec2(PORT_SIZE, PORT_SIZE),
-                                            egui::Sense::click(),
-                                        );
-                                        let port_color = if port_resp.hovered() {
-                                            egui::Color32::WHITE
-                                        } else {
-                                            GREEN
-                                        };
-                                        ui.painter().circle_filled(
-                                            port_rect.center(),
-                                            PORT_RADIUS,
-                                            port_color,
-                                        );
-                                        ui.label(egui::RichText::new(format!("Out {port_idx}")).small());
+                // ── Parameters ──────────────────────────
+                for (pi, pdef) in tmpl.params.iter().enumerate() {
+                    if pi >= node.param_values.len() {
+                        break;
+                    }
+                    let mut val = node.param_values[pi];
+                    let mut slider = egui::Slider::new(&mut val, pdef.min..=pdef.max);
+                    if pdef.log {
+                        slider = slider.logarithmic(true);
+                    }
+                    if !pdef.suffix.is_empty() {
+                        slider = slider.suffix(format!(" {}", pdef.suffix));
+                    }
+                    slider = slider.text(pdef.name);
+                    if ui.add(slider).changed() {
+                        node.param_values[pi] = val;
+                        actions.push(UiAction::ParamChanged(
+                            node_id as u32,
+                            pdef.hash,
+                            val,
+                        ));
+                    }
+                }
 
-                                        // Store screen position for wire drawing
-                                        if port_idx < node.output_port_screen.len() {
-                                            node.output_port_screen[port_idx] = Some(port_rect.center());
-                                        }
+                // ── Output ports ────────────────────────
+                for port_idx in 0..tmpl.num_outputs {
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            let (port_rect, port_resp) = ui.allocate_exact_size(
+                                egui::vec2(PORT_SIZE, PORT_SIZE),
+                                egui::Sense::click(),
+                            );
+                            let port_color = if port_resp.hovered() {
+                                egui::Color32::WHITE
+                            } else {
+                                GREEN
+                            };
+                            ui.painter().circle_filled(
+                                port_rect.center(),
+                                PORT_RADIUS,
+                                port_color,
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("Out {port_idx}")).small(),
+                            );
 
-                                        // Start a new wire
-                                        if port_resp.clicked() && pending.is_none() {
-                                            actions.push(UiAction::BeginWire(node_id, port_idx));
-                                        }
-                                    },
-                                );
+                            if port_idx < node.output_port_screen.len() {
+                                node.output_port_screen[port_idx] =
+                                    Some(port_rect.center());
                             }
-                        });
-                });
 
-            // Handle manual dragging (since movable=false, we track drag ourselves)
-            if !is_running && area_response.response.dragged_by(egui::PointerButton::Primary) {
-                let delta = area_response.response.drag_delta();
-                node.world_pos += delta;
+                            if port_resp.clicked() && pending.is_none() {
+                                actions.push(UiAction::BeginWire(node_id, port_idx));
+                            }
+                        },
+                    );
+                }
+            });
+
+            // Track window drag -> update world position
+            if let Some(ref resp) = win_resp {
+                if !is_running && resp.response.dragged() {
+                    let d = resp.response.drag_delta();
+                    node.world_pos.x += d.x / zoom;
+                    node.world_pos.y += d.y / zoom;
+                }
+            }
+
+            // Delete node via window close button
+            if !node_open && !is_running {
+                actions.push(UiAction::RemoveNode(node_id));
             }
         }
 
