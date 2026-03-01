@@ -351,6 +351,12 @@ struct JodugaApp {
     sample_rate: u32,
     buffer_size: u32,
     show_grid: bool,
+
+    // Panel rects (for masking node overflow)
+    toolbar_rect: egui::Rect,
+    waveform_rect: egui::Rect,
+    catalog_rect: egui::Rect,
+    settings_rect: Option<egui::Rect>,
 }
 
 impl JodugaApp {
@@ -376,10 +382,10 @@ impl JodugaApp {
         };
 
         let nodes = vec![
-            make_node(0, osc_idx, 20.0, 30.0, &cat),
-            make_node(1, flt_idx, 280.0, 30.0, &cat),
-            make_node(2, gain_idx, 540.0, 30.0, &cat),
-            make_node(3, out_idx, 780.0, 30.0, &cat),
+            make_node(0, osc_idx, 20.0, 20.0, &cat),
+            make_node(1, flt_idx, 290.0, 20.0, &cat),
+            make_node(2, gain_idx, 560.0, 20.0, &cat),
+            make_node(3, out_idx, 830.0, 20.0, &cat),
         ];
         let wires = vec![
             Wire { from_node: 0, from_port: 0, to_node: 1, to_port: 0 },
@@ -405,6 +411,10 @@ impl JodugaApp {
             sample_rate: 48000,
             buffer_size: 256,
             show_grid: true,
+            toolbar_rect: egui::Rect::NOTHING,
+            waveform_rect: egui::Rect::NOTHING,
+            catalog_rect: egui::Rect::NOTHING,
+            settings_rect: None,
         }
     }
 
@@ -597,9 +607,12 @@ impl eframe::App for JodugaApp {
         let mut actions: Vec<UiAction> = Vec::new();
 
         // ── Top toolbar ─────────────────────────────────────────────
-        egui::TopBottomPanel::top("toolbar")
+        let toolbar_resp = egui::TopBottomPanel::top("toolbar")
             .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(8)))
             .show(ctx, |ui| {
+                ui.with_layer_id(
+                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("toolbar_layer")),
+                    |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(egui::RichText::new("🎵 Joduga").strong().color(ACCENT));
                     ui.separator();
@@ -628,13 +641,19 @@ impl eframe::App for JodugaApp {
                         ui.label(egui::RichText::new("🔗 Click an input port to connect · Esc to cancel").color(egui::Color32::YELLOW));
                     }
                 });
+                    },
+                );
             });
+        self.toolbar_rect = toolbar_resp.response.rect;
 
         // ── Bottom waveform panel ───────────────────────────────────
-        egui::TopBottomPanel::bottom("waveform_panel")
+        let waveform_resp = egui::TopBottomPanel::bottom("waveform_panel")
             .exact_height(100.0)
             .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(4)))
             .show(ctx, |ui| {
+                ui.with_layer_id(
+                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("waveform_layer")),
+                    |ui| {
                 let wf_data = self.waveform.lock().unwrap().clone();
                 let points: PlotPoints = wf_data
                     .iter()
@@ -652,13 +671,19 @@ impl eframe::App for JodugaApp {
                     .show(ui, |plot_ui| {
                         plot_ui.line(Line::new(points).color(ACCENT));
                     });
+                    },
+                );
             });
+        self.waveform_rect = waveform_resp.response.rect;
 
         // ── Left panel: node catalog ────────────────────────────────
-        egui::SidePanel::left("node_catalog")
+        let catalog_resp = egui::SidePanel::left("node_catalog")
             .default_width(190.0)
             .frame(egui::Frame::new().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
             .show(ctx, |ui| {
+                ui.with_layer_id(
+                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("catalog_layer")),
+                    |ui| {
                 ui.heading(egui::RichText::new("Node Catalog").color(ACCENT));
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -715,14 +740,21 @@ impl eframe::App for JodugaApp {
                         });
                     }
                 });
+                    },
+                );
             });
+        self.catalog_rect = catalog_resp.response.rect;
 
         // ── Right panel: settings ───────────────────────────────────
+        self.settings_rect = None;
         if self.show_settings {
-            egui::SidePanel::right("settings_panel")
+            let settings_resp = egui::SidePanel::right("settings_panel")
                 .default_width(210.0)
                 .frame(egui::Frame::new().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
                 .show(ctx, |ui| {
+                    ui.with_layer_id(
+                        egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("settings_layer")),
+                        |ui| {
                     ui.heading(egui::RichText::new("⚙ Settings").color(ACCENT));
                     ui.separator();
 
@@ -774,7 +806,10 @@ impl eframe::App for JodugaApp {
                          • ✖ or close → remove node\n\
                          • Escape → cancel connection"
                     ).small().color(egui::Color32::GRAY));
+                    },
+                );
                 });
+            self.settings_rect = Some(settings_resp.response.rect);
         }
 
         // ── Central canvas ──────────────────────────────────────────
@@ -800,13 +835,28 @@ impl eframe::App for JodugaApp {
                 }
 
                 // Scroll: Ctrl+scroll = zoom, normal scroll = pan
-                if canvas_resp.hovered() {
+                // Check pointer position directly (not canvas_resp.hovered()) so
+                // zoom/scroll works even when cursor is over a node Window
+                let pointer_in_canvas = ctx.input(|i| {
+                    i.pointer.hover_pos().map(|p| canvas_rect.contains(p)).unwrap_or(false)
+                });
+                if pointer_in_canvas {
                     let ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
                     let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
-                    if ctrl && scroll_y != 0.0 {
-                        let mouse_pos = ctx.input(|i| {
-                            i.pointer.hover_pos().unwrap_or(canvas_rect.center())
-                        });
+                    let pinch_zoom = ctx.input(|i| i.zoom_delta());
+                    let mouse_pos = ctx.input(|i| {
+                        i.pointer.hover_pos().unwrap_or(canvas_rect.center())
+                    });
+
+                    // Pinch-to-zoom (trackpad)
+                    if pinch_zoom != 1.0 {
+                        let mwx = (mouse_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom;
+                        let mwy = (mouse_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom;
+                        self.zoom = (self.zoom * pinch_zoom).clamp(0.15, 5.0);
+                        self.pan.x = mouse_pos.x - canvas_rect.min.x - mwx * self.zoom;
+                        self.pan.y = mouse_pos.y - canvas_rect.min.y - mwy * self.zoom;
+                    } else if ctrl && scroll_y != 0.0 {
+                        // Ctrl+scroll zoom
                         let mwx = (mouse_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom;
                         let mwy = (mouse_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom;
                         let zd = if scroll_y > 0.0 { 1.1 } else { 1.0 / 1.1 };
@@ -814,6 +864,7 @@ impl eframe::App for JodugaApp {
                         self.pan.x = mouse_pos.x - canvas_rect.min.x - mwx * self.zoom;
                         self.pan.y = mouse_pos.y - canvas_rect.min.y - mwy * self.zoom;
                     } else {
+                        // Regular scroll = pan
                         let scroll = ctx.input(|i| i.smooth_scroll_delta);
                         if scroll != egui::Vec2::ZERO {
                             self.pan += scroll;
@@ -967,7 +1018,7 @@ impl eframe::App for JodugaApp {
             .resizable(!is_running)
             .collapsible(false)
             .title_bar(true)
-            .constrain(false)
+            .constrain_to(canvas_rect)
             .frame(
                 egui::Frame::new()
                     .fill(SURFACE)
@@ -977,6 +1028,9 @@ impl eframe::App for JodugaApp {
             )
             .open(&mut node_open)
             .show(ctx, |ui| {
+                // Clip content to canvas area so nodes don't render over panels
+                ui.set_clip_rect(ui.clip_rect().intersect(canvas_rect));
+
                 // ── Input ports ─────────────────────────
                 for port_idx in 0..tmpl.num_inputs {
                     ui.horizontal(|ui| {
@@ -1091,6 +1145,35 @@ impl eframe::App for JodugaApp {
             // Delete node via window close button
             if !node_open && !is_running {
                 actions.push(UiAction::RemoveNode(node_id));
+            }
+        }
+
+        // ── Paint panel masks on Foreground layer ────────────────────
+        // This covers any node Window edges that extend into panel areas.
+        // Panel content is on Order::Tooltip (above this), panel backgrounds
+        // are on Order::Background (below nodes). These masks sit on
+        // Order::Foreground which is above node Windows (Order::Middle).
+        {
+            let mask = ctx.layer_painter(
+                egui::LayerId::new(egui::Order::Foreground, egui::Id::new("panel_masks")),
+            );
+            let _screen = ctx.screen_rect();
+
+            // Top toolbar mask
+            if self.toolbar_rect != egui::Rect::NOTHING {
+                mask.rect_filled(self.toolbar_rect, 0.0, SURFACE);
+            }
+            // Bottom waveform mask
+            if self.waveform_rect != egui::Rect::NOTHING {
+                mask.rect_filled(self.waveform_rect, 0.0, SURFACE);
+            }
+            // Left catalog mask
+            if self.catalog_rect != egui::Rect::NOTHING {
+                mask.rect_filled(self.catalog_rect, 0.0, egui::Color32::from_rgb(24, 24, 32));
+            }
+            // Right settings mask
+            if let Some(sr) = self.settings_rect {
+                mask.rect_filled(sr, 0.0, egui::Color32::from_rgb(24, 24, 32));
             }
         }
 
