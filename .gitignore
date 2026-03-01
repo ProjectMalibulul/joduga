@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# C++ Build Artifacts
+/build/
+/cpp/build/
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node/Frontend
+node_modules/
+dist/
+*.log
+
+# Tauri
+/rust/src-tauri/target/
