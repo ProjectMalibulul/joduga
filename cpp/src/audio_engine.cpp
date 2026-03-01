@@ -1,5 +1,5 @@
 /// Core audio engine implementation.
-/// This is the heart of the synthesizer—the real-time audio thread.
+/// Real-time audio thread with lock-free parameter passing.
 
 #include "audio_engine.h"
 #include "audio_node.h"
@@ -14,32 +14,40 @@
 #include <cstring>
 #include <iostream>
 #include <vector>
+#include <unordered_map>
 
-/// Internal audio engine implementation
+// ── Internal engine state ──────────────────────────────────────────────
 struct AudioEngineImpl
 {
-    // Configuration
     uint32_t sample_rate = 48000;
     uint32_t block_size = 256;
     uint32_t cpu_core = 0;
 
-    // State
     std::atomic<bool> is_running{false};
     std::atomic<uint64_t> sample_count{0};
     std::thread audio_thread;
 
-    // Graph nodes and execution order
+    // Graph
     std::vector<std::unique_ptr<AudioNode>> nodes;
-    std::vector<uint32_t> execution_order;
+    std::unordered_map<uint32_t, size_t> node_id_to_slot; // node_id → vector index
+    std::vector<uint32_t> execution_order;                // stores node_ids
     uint32_t output_node_id = 0;
 
-    // Scratch buffers for inter-node communication
+    // Inter-node scratch buffers (indexed by slot)
     std::vector<std::vector<float>> scratch_buffers;
 
-    // Connection wiring
-    std::vector<NodeConnection> connections;
+    // Pre-built wiring  (slot indices, not node IDs)
+    struct SlotConn
+    {
+        uint32_t from_slot;
+        uint32_t to_slot;
+        uint32_t to_input;
+    };
+    std::vector<SlotConn> slot_connections;
+    // Which slot feeds into the output node's first input (cached)
+    int32_t output_feeder_slot = -1;
 
-    // Lock-free queue pointers (Rust side owns the actual buffers)
+    // Lock-free queues (Rust-owned memory)
     const void *param_queue_buffer = nullptr;
     uint32_t param_queue_capacity = 0;
     const std::atomic<size_t> *param_queue_head = nullptr;
@@ -52,15 +60,19 @@ struct AudioEngineImpl
 
     StatusRegister *status_register = nullptr;
 
-    // Working buffers
+    // Output ring (Rust-owned)
+    float *output_ring_buffer = nullptr;
+    uint32_t output_ring_capacity = 0;
+    std::atomic<size_t> *output_ring_head = nullptr;
+    const std::atomic<size_t> *output_ring_tail = nullptr;
+
+    // Working buffer
     std::vector<ParamUpdateCmd> pending_params;
 };
 
-/// Global audio engine (accessed from the audio thread)
-/// Only one instance is allowed at a time
 static AudioEngineImpl *g_audio_engine = nullptr;
 
-/// Create a node based on type
+// ── Node factory ───────────────────────────────────────────────────────
 static std::unique_ptr<AudioNode> create_node(NodeType type, uint32_t node_id)
 {
     std::unique_ptr<AudioNode> node;
@@ -73,106 +85,104 @@ static std::unique_ptr<AudioNode> create_node(NodeType type, uint32_t node_id)
         node = std::make_unique<FilterNode>();
         break;
     case NODE_TYPE_GAIN:
-    case NODE_TYPE_OUTPUT: // Treat output as a gain node for now
+    case NODE_TYPE_OUTPUT:
         node = std::make_unique<GainNode>();
         break;
     default:
-        std::cerr << "Unknown node type: " << type << std::endl;
+        std::cerr << "[joduga] Unknown node type: " << type << "\n";
         return nullptr;
     }
     node->node_id = node_id;
     return node;
 }
 
-/// Audio processing thread function
-static void audio_thread_main(AudioEngineImpl *engine)
+// ── Audio thread ───────────────────────────────────────────────────────
+static void audio_thread_main(AudioEngineImpl *e)
 {
-    // Set real-time priority and CPU affinity
-    if (rt_platform::set_thread_rt_priority(engine->cpu_core) != 0)
+    rt_platform::set_thread_rt_priority(e->cpu_core);
+
+    e->pending_params.resize(256);
+
+    // Pre-compute block duration for sleep-based pacing
+    const uint64_t block_ns =
+        static_cast<uint64_t>(e->block_size) * 1000000000ULL / e->sample_rate;
+
+    while (e->is_running.load(std::memory_order_acquire))
     {
-        std::cerr << "Warning: Could not set real-time priority" << std::endl;
-    }
-
-    // Pre-allocate parameter update working buffer
-    engine->pending_params.resize(256); // Assume max 256 param updates per block
-
-    // Main audio loop
-    while (engine->is_running.load(std::memory_order_acquire))
-    {
-        // Drain parameter queue and apply updates
-        size_t tail = engine->param_queue_tail->load(std::memory_order_acquire);
-        size_t head = engine->param_queue_head->load(std::memory_order_acquire);
-
-        // Calculate available commands
-        uint32_t available = 0;
-        if (head >= tail)
-        {
-            available = head - tail;
-        }
-        else
-        {
-            available = engine->param_queue_capacity - tail + head;
-        }
-
-        // Copy pending parameter updates
+        // ── Drain param queue ────────────────────────────────────
         uint32_t num_params = 0;
-        if (available > 0 && engine->param_queue_buffer != nullptr)
         {
-            const ParamUpdateCmd *queue = static_cast<const ParamUpdateCmd *>(engine->param_queue_buffer);
-            for (uint32_t i = 0; i < available && num_params < engine->pending_params.size(); ++i)
+            size_t tail = e->param_queue_tail->load(std::memory_order_acquire);
+            size_t head = e->param_queue_head->load(std::memory_order_acquire);
+            uint32_t avail = (head >= tail)
+                                 ? static_cast<uint32_t>(head - tail)
+                                 : static_cast<uint32_t>(e->param_queue_capacity - tail + head);
+
+            if (avail > 0 && e->param_queue_buffer)
             {
-                uint32_t idx = (tail + i) & (engine->param_queue_capacity - 1);
-                engine->pending_params[num_params++] = queue[idx];
+                const auto *q = static_cast<const ParamUpdateCmd *>(e->param_queue_buffer);
+                uint32_t cap = e->param_queue_capacity;
+                for (uint32_t i = 0; i < avail && num_params < e->pending_params.size(); ++i)
+                    e->pending_params[num_params++] = q[(tail + i) & (cap - 1)];
+                e->param_queue_tail->store(
+                    (tail + avail) & (e->param_queue_capacity - 1),
+                    std::memory_order_release);
             }
-            // Update tail
-            engine->param_queue_tail->store((tail + available) & (engine->param_queue_capacity - 1), std::memory_order_release);
         }
 
-        // Process each node in topologically-sorted order
-        for (uint32_t node_idx : engine->execution_order)
+        // ── Process graph ────────────────────────────────────────
+        for (uint32_t nid : e->execution_order)
         {
-            if (node_idx >= engine->nodes.size())
-            {
-                std::cerr << "Invalid node index in execution order: " << node_idx << std::endl;
+            auto it = e->node_id_to_slot.find(nid);
+            if (it == e->node_id_to_slot.end())
                 continue;
-            }
+            size_t slot = it->second;
+            AudioNode *node = e->nodes[slot].get();
 
-            AudioNode *node = engine->nodes[node_idx].get();
-
-            // Gather input pointers from connections
-            const float *inputs[MAX_AUDIO_INPUTS] = {nullptr};
-            for (const auto& conn : engine->connections) {
-                if (conn.to_node_id == node_idx && conn.to_input_idx < MAX_AUDIO_INPUTS) {
-                    if (conn.from_node_id < engine->scratch_buffers.size()) {
-                        inputs[conn.to_input_idx] = engine->scratch_buffers[conn.from_node_id].data();
-                    }
-                }
-            }
-
-            // Gather output pointers
-            float *outputs[MAX_AUDIO_OUTPUTS] = {nullptr};
-            for (uint32_t i = 0; i < node->num_outputs; ++i)
+            const float *inputs[MAX_AUDIO_INPUTS] = {};
+            for (const auto &c : e->slot_connections)
             {
-                outputs[i] = engine->scratch_buffers[node_idx].data();
+                if (c.to_slot == slot && c.to_input < MAX_AUDIO_INPUTS)
+                    inputs[c.to_input] = e->scratch_buffers[c.from_slot].data();
             }
 
-            // Process node
-            node->process(inputs, outputs, engine->block_size, engine->pending_params.data(), num_params);
+            float *outputs[MAX_AUDIO_OUTPUTS] = {};
+            for (uint32_t i = 0; i < node->num_outputs; ++i)
+                outputs[i] = e->scratch_buffers[slot].data();
+
+            node->process(inputs, outputs, e->block_size,
+                          e->pending_params.data(), num_params);
         }
 
-        // Increment sample count
-        engine->sample_count.fetch_add(engine->block_size, std::memory_order_release);
+        e->sample_count.fetch_add(e->block_size, std::memory_order_release);
 
-        // Update status register
-        if (engine->status_register != nullptr)
+        // ── Copy output to ring buffer ───────────────────────────
+        if (e->output_ring_buffer && e->output_feeder_slot >= 0)
         {
-            engine->status_register->graph_version++;
+            size_t oh = e->output_ring_head->load(std::memory_order_acquire);
+            size_t ot = e->output_ring_tail->load(std::memory_order_acquire);
+            uint32_t cap = e->output_ring_capacity;
+            size_t used = (oh >= ot) ? (oh - ot) : (cap - ot + oh);
+            size_t free = cap - used - 1;
+            uint32_t to_write = std::min(e->block_size, static_cast<uint32_t>(free));
+
+            const float *src = e->scratch_buffers[e->output_feeder_slot].data();
+            for (uint32_t i = 0; i < to_write; ++i)
+                e->output_ring_buffer[(oh + i) & (cap - 1)] = src[i];
+
+            e->output_ring_head->store((oh + to_write) & (cap - 1),
+                                       std::memory_order_release);
         }
 
-        // TODO: Write output to audio device
+        if (e->status_register)
+            e->status_register->graph_version++;
+
+        // Pace the thread so it doesn't spin at 100 % CPU
+        rt_platform::sleep_precise_ns(block_ns);
     }
 }
 
+// ── extern "C" API ─────────────────────────────────────────────────────
 extern "C"
 {
 
@@ -187,137 +197,133 @@ extern "C"
         uint32_t midi_queue_capacity,
         const void *midi_queue_head,
         const void *midi_queue_tail,
-        StatusRegister *status_register)
+        StatusRegister *status_register,
+        float *output_ring_buffer,
+        uint32_t output_ring_capacity,
+        void *output_ring_head,
+        const void *output_ring_tail)
     {
-        // Prevent multiple instances
-        if (g_audio_engine != nullptr)
+        if (g_audio_engine)
         {
-            std::cerr << "Audio engine already initialized" << std::endl;
+            std::cerr << "[joduga] Engine already initialised\n";
             return nullptr;
         }
 
-        auto engine = std::make_unique<AudioEngineImpl>();
+        auto e = std::make_unique<AudioEngineImpl>();
+        e->sample_rate = config->sample_rate;
+        e->block_size = config->block_size;
+        e->cpu_core = config->cpu_core;
 
-        // Copy configuration
-        engine->sample_rate = config->sample_rate;
-        engine->block_size = config->block_size;
-        engine->cpu_core = config->cpu_core;
-
-        // Create nodes from graph
+        // Create nodes and build id→slot map
         for (uint32_t i = 0; i < graph->num_nodes; ++i)
         {
-            const NodeDesc &node_desc = graph->nodes[i];
-            auto node = create_node(node_desc.node_type, node_desc.node_id);
+            const auto &nd = graph->nodes[i];
+            auto node = create_node(nd.node_type, nd.node_id);
             if (!node)
-            {
-                std::cerr << "Failed to create node " << i << std::endl;
                 return nullptr;
-            }
-            node->sample_rate = engine->sample_rate;
-            engine->nodes.push_back(std::move(node));
+            node->sample_rate = static_cast<float>(e->sample_rate);
+            size_t slot = e->nodes.size();
+            e->node_id_to_slot[nd.node_id] = slot;
+            e->nodes.push_back(std::move(node));
         }
 
-        // Copy execution order
-        engine->execution_order.resize(graph->num_in_order);
-        std::memcpy(engine->execution_order.data(), graph->execution_order, graph->num_in_order * sizeof(uint32_t));
-        engine->output_node_id = graph->output_node_id;
+        // Copy execution order (stores node IDs)
+        e->execution_order.assign(graph->execution_order,
+                                  graph->execution_order + graph->num_in_order);
+        e->output_node_id = graph->output_node_id;
 
-        // Copy connections
-        engine->connections.resize(graph->num_connections);
-        for (uint32_t i = 0; i < graph->num_connections; ++i) {
-            engine->connections[i] = graph->connections[i];
-        }
-
-        // Allocate scratch buffers for inter-node communication
-        engine->scratch_buffers.resize(engine->nodes.size());
-        for (auto &buffer : engine->scratch_buffers)
+        // Pre-build slot-based connections for O(1) lookup in the audio thread
+        for (uint32_t i = 0; i < graph->num_connections; ++i)
         {
-            buffer.resize(engine->block_size);
+            const auto &c = graph->connections[i];
+            auto fit = e->node_id_to_slot.find(c.from_node_id);
+            auto tit = e->node_id_to_slot.find(c.to_node_id);
+            if (fit == e->node_id_to_slot.end() || tit == e->node_id_to_slot.end())
+                continue;
+            e->slot_connections.push_back({static_cast<uint32_t>(fit->second),
+                                           static_cast<uint32_t>(tit->second),
+                                           c.to_input_idx});
+
+            // Cache which slot feeds the output node
+            if (c.to_node_id == e->output_node_id)
+                e->output_feeder_slot = static_cast<int32_t>(fit->second);
         }
+
+        // Allocate scratch buffers
+        e->scratch_buffers.resize(e->nodes.size());
+        for (auto &buf : e->scratch_buffers)
+            buf.resize(e->block_size, 0.0f);
 
         // Store queue pointers
-        engine->param_queue_buffer = param_queue_buffer;
-        engine->param_queue_capacity = param_queue_capacity;
-        engine->param_queue_head = static_cast<const std::atomic<size_t> *>(param_queue_head);
-        engine->param_queue_tail = const_cast<std::atomic<size_t> *>(static_cast<const std::atomic<size_t> *>(param_queue_tail));
+        e->param_queue_buffer = param_queue_buffer;
+        e->param_queue_capacity = param_queue_capacity;
+        e->param_queue_head = static_cast<const std::atomic<size_t> *>(param_queue_head);
+        e->param_queue_tail = const_cast<std::atomic<size_t> *>(
+            static_cast<const std::atomic<size_t> *>(param_queue_tail));
 
-        engine->midi_queue_buffer = midi_queue_buffer;
-        engine->midi_queue_capacity = midi_queue_capacity;
-        engine->midi_queue_head = static_cast<const std::atomic<size_t> *>(midi_queue_head);
-        engine->midi_queue_tail = const_cast<std::atomic<size_t> *>(static_cast<const std::atomic<size_t> *>(midi_queue_tail));
+        e->midi_queue_buffer = midi_queue_buffer;
+        e->midi_queue_capacity = midi_queue_capacity;
+        e->midi_queue_head = static_cast<const std::atomic<size_t> *>(midi_queue_head);
+        e->midi_queue_tail = const_cast<std::atomic<size_t> *>(
+            static_cast<const std::atomic<size_t> *>(midi_queue_tail));
 
-        engine->status_register = status_register;
+        e->status_register = status_register;
 
-        g_audio_engine = engine.release();
+        e->output_ring_buffer = output_ring_buffer;
+        e->output_ring_capacity = output_ring_capacity;
+        e->output_ring_head = output_ring_head
+                                  ? static_cast<std::atomic<size_t> *>(output_ring_head)
+                                  : nullptr;
+        e->output_ring_tail = output_ring_tail
+                                  ? static_cast<const std::atomic<size_t> *>(output_ring_tail)
+                                  : nullptr;
+
+        g_audio_engine = e.release();
         return reinterpret_cast<AudioEngine *>(g_audio_engine);
     }
 
-    int audio_engine_start(AudioEngine *engine_opaque)
-    {
-        auto engine = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
-        if (!engine)
-        {
-            return -1;
-        }
+int audio_engine_start(AudioEngine *engine_opaque)
+{
+    auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
+    if (!e)
+        return -1;
+    e->is_running.store(true, std::memory_order_release);
+    e->audio_thread = std::thread(audio_thread_main, e);
+    return 0;
+}
 
-        engine->is_running.store(true, std::memory_order_release);
-        engine->audio_thread = std::thread(audio_thread_main, engine);
+int audio_engine_stop(AudioEngine *engine_opaque)
+{
+    auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
+    if (!e)
+        return -1;
+    e->is_running.store(false, std::memory_order_release);
+    if (e->audio_thread.joinable())
+        e->audio_thread.join();
+    return 0;
+}
 
-        return 0;
-    }
+void audio_engine_destroy(AudioEngine *engine_opaque)
+{
+    auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
+    if (!e)
+        return;
+    if (e->is_running.load(std::memory_order_acquire))
+        audio_engine_stop(engine_opaque);
+    delete e;
+    g_audio_engine = nullptr;
+}
 
-    int audio_engine_stop(AudioEngine *engine_opaque)
-    {
-        auto engine = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
-        if (!engine)
-        {
-            return -1;
-        }
+uint64_t audio_engine_get_sample_count(const AudioEngine *engine_opaque)
+{
+    auto *e = reinterpret_cast<const AudioEngineImpl *>(engine_opaque);
+    return e ? e->sample_count.load(std::memory_order_acquire) : 0;
+}
 
-        engine->is_running.store(false, std::memory_order_release);
-        if (engine->audio_thread.joinable())
-        {
-            engine->audio_thread.join();
-        }
-
-        return 0;
-    }
-
-    void audio_engine_destroy(AudioEngine *engine_opaque)
-    {
-        auto engine = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
-        if (!engine)
-        {
-            return;
-        }
-
-        if (engine->is_running.load(std::memory_order_acquire))
-        {
-            audio_engine_stop(engine_opaque);
-        }
-
-        delete engine;
-        g_audio_engine = nullptr;
-    }
-
-    uint64_t audio_engine_get_sample_count(const AudioEngine *engine_opaque)
-    {
-        auto engine = reinterpret_cast<const AudioEngineImpl *>(engine_opaque);
-        if (!engine)
-        {
-            return 0;
-        }
-        return engine->sample_count.load(std::memory_order_acquire);
-    }
-
-    uint8_t audio_engine_is_running(const AudioEngine *engine_opaque)
-    {
-        auto engine = reinterpret_cast<const AudioEngineImpl *>(engine_opaque);
-        if (!engine)
-        {
-            return 0;
-        }
-        return engine->is_running.load(std::memory_order_acquire) ? 1 : 0;
-    }
+uint8_t audio_engine_is_running(const AudioEngine *engine_opaque)
+{
+    auto *e = reinterpret_cast<const AudioEngineImpl *>(engine_opaque);
+    return (e && e->is_running.load(std::memory_order_acquire)) ? 1 : 0;
+}
 
 } // extern "C"

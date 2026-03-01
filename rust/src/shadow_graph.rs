@@ -1,7 +1,10 @@
+/// Shadow graph — local representation of the audio graph maintained by Rust.
+///
+/// Used to validate the user-created graph (acyclicity, port bounds),
+/// topologically sort it (Kahn's algorithm), and compile it into the C FFI
+/// structures expected by the C++ engine.
+
 use crate::ffi::{NodeConnection, NodeDesc, NodeType};
-/// Shadow graph representation in Rust.
-/// This is a local representation of the audio graph that the Rust middleware
-/// maintains to validate, topologically sort, and compile before sending to C++.
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone)]
@@ -21,7 +24,6 @@ pub struct Edge {
     pub to_input_idx: u32,
 }
 
-/// The shadow graph—a local representation maintained by Rust
 #[derive(Debug, Clone)]
 pub struct ShadowGraph {
     pub nodes: HashMap<u32, Node>,
@@ -31,14 +33,9 @@ pub struct ShadowGraph {
 
 impl ShadowGraph {
     pub fn new(output_node_id: u32) -> Self {
-        ShadowGraph {
-            nodes: HashMap::new(),
-            edges: Vec::new(),
-            output_node_id,
-        }
+        Self { nodes: HashMap::new(), edges: Vec::new(), output_node_id }
     }
 
-    /// Add a node to the graph
     pub fn add_node(&mut self, node: Node) -> Result<(), String> {
         if self.nodes.contains_key(&node.id) {
             return Err(format!("Node {} already exists", node.id));
@@ -47,30 +44,22 @@ impl ShadowGraph {
         Ok(())
     }
 
-    /// Add an edge between two nodes
     pub fn add_edge(&mut self, edge: Edge) -> Result<(), String> {
-        // Validate that both nodes exist
-        if !self.nodes.contains_key(&edge.from_node_id) {
-            return Err(format!("Source node {} does not exist", edge.from_node_id));
-        }
-        if !self.nodes.contains_key(&edge.to_node_id) {
-            return Err(format!("Target node {} does not exist", edge.to_node_id));
-        }
-
-        // Validate output/input indices
-        let from_node = &self.nodes[&edge.from_node_id];
-        if edge.from_output_idx >= from_node.num_outputs {
+        let from = self.nodes.get(&edge.from_node_id)
+            .ok_or_else(|| format!("Source node {} does not exist", edge.from_node_id))?;
+        if edge.from_output_idx >= from.num_outputs {
             return Err(format!(
-                "Node {} has only {} outputs (requested {})",
-                edge.from_node_id, from_node.num_outputs, edge.from_output_idx
+                "Node {} has {} outputs, requested idx {}",
+                edge.from_node_id, from.num_outputs, edge.from_output_idx
             ));
         }
 
-        let to_node = &self.nodes[&edge.to_node_id];
-        if edge.to_input_idx >= to_node.num_inputs {
+        let to = self.nodes.get(&edge.to_node_id)
+            .ok_or_else(|| format!("Target node {} does not exist", edge.to_node_id))?;
+        if edge.to_input_idx >= to.num_inputs {
             return Err(format!(
-                "Node {} has only {} inputs (requested {})",
-                edge.to_node_id, to_node.num_inputs, edge.to_input_idx
+                "Node {} has {} inputs, requested idx {}",
+                edge.to_node_id, to.num_inputs, edge.to_input_idx
             ));
         }
 
@@ -78,135 +67,93 @@ impl ShadowGraph {
         Ok(())
     }
 
-    /// Validate the graph (check for cycles and connectivity)
+    /// Validate acyclicity using DFS with proper HashMap-based colouring.
     pub fn validate(&self) -> Result<(), String> {
-        // Check for cycles using DFS
-        let mut visited = vec![false; self.nodes.len()];
-        let mut rec_stack = vec![false; self.nodes.len()];
+        // white = unvisited, grey = in recursion stack, black = done
+        let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
 
-        for node_id in self.nodes.keys() {
-            if !visited[*node_id as usize % self.nodes.len()] {
-                if self.has_cycle(*node_id, &mut visited, &mut rec_stack)? {
-                    return Err("Graph contains cycles".to_string());
-                }
-            }
+        // Build adjacency list once
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+        for e in &self.edges {
+            adj.entry(e.from_node_id).or_default().push(e.to_node_id);
         }
 
+        for &id in self.nodes.keys() {
+            if color[&id] == 0 {
+                Self::dfs_cycle(id, &adj, &mut color)?;
+            }
+        }
         Ok(())
     }
 
-    /// Check if the graph has cycles (recursive helper)
-    fn has_cycle(
-        &self,
-        node_id: u32,
-        visited: &mut Vec<bool>,
-        rec_stack: &mut Vec<bool>,
-    ) -> Result<bool, String> {
-        let idx = node_id as usize;
-        visited[idx] = true;
-        rec_stack[idx] = true;
-
-        // Find all outgoing edges from this node
-        for edge in &self.edges {
-            if edge.from_node_id == node_id {
-                let target_idx = edge.to_node_id as usize;
-
-                if !visited[target_idx] {
-                    if self.has_cycle(edge.to_node_id, visited, rec_stack)? {
-                        return Ok(true);
-                    }
-                } else if rec_stack[target_idx] {
-                    return Ok(true); // Back edge detected
+    fn dfs_cycle(
+        node: u32,
+        adj: &HashMap<u32, Vec<u32>>,
+        color: &mut HashMap<u32, u8>,
+    ) -> Result<(), String> {
+        color.insert(node, 1); // grey
+        if let Some(neighbours) = adj.get(&node) {
+            for &next in neighbours {
+                match color.get(&next).copied().unwrap_or(0) {
+                    1 => return Err("Graph contains a cycle".into()),
+                    0 => Self::dfs_cycle(next, adj, color)?,
+                    _ => {} // black — already finished
                 }
             }
         }
-
-        rec_stack[idx] = false;
-        Ok(false)
+        color.insert(node, 2); // black
+        Ok(())
     }
 
-    /// Topologically sort the graph (Kahn's algorithm)
+    /// Kahn's algorithm — returns execution order as `Vec<u32>` of node IDs.
     pub fn topological_sort(&self) -> Result<Vec<u32>, String> {
-        // Validate first
         self.validate()?;
 
-        // Build in-degree map
-        let mut in_degree: HashMap<u32, u32> = HashMap::new();
-        for node_id in self.nodes.keys() {
-            in_degree.entry(*node_id).or_insert(0);
+        let mut in_degree: HashMap<u32, u32> = self.nodes.keys().map(|&id| (id, 0)).collect();
+        for e in &self.edges {
+            *in_degree.entry(e.to_node_id).or_default() += 1;
         }
 
-        for edge in &self.edges {
-            *in_degree.entry(edge.to_node_id).or_insert(0) += 1;
-        }
+        let mut queue: VecDeque<u32> = in_degree.iter()
+            .filter(|(_, &d)| d == 0)
+            .map(|(&id, _)| id)
+            .collect();
 
-        // Find nodes with in_degree 0
-        let mut queue = VecDeque::new();
-        for (node_id, &degree) in &in_degree {
-            if degree == 0 {
-                queue.push_back(*node_id);
-            }
-        }
-
-        let mut result = Vec::new();
-        let mut in_degree = in_degree;
-
-        while let Some(node_id) = queue.pop_front() {
-            result.push(node_id);
-
-            // Process all edges from this node
-            for edge in &self.edges {
-                if edge.from_node_id == node_id {
-                    let target = edge.to_node_id;
-                    *in_degree.get_mut(&target).unwrap() -= 1;
-
-                    if in_degree[&target] == 0 {
-                        queue.push_back(target);
-                    }
+        let mut result = Vec::with_capacity(self.nodes.len());
+        while let Some(id) = queue.pop_front() {
+            result.push(id);
+            for e in &self.edges {
+                if e.from_node_id == id {
+                    let d = in_degree.get_mut(&e.to_node_id).unwrap();
+                    *d -= 1;
+                    if *d == 0 { queue.push_back(e.to_node_id); }
                 }
             }
         }
 
         if result.len() != self.nodes.len() {
-            return Err("Graph has cycles (topological sort incomplete)".to_string());
+            return Err("Graph has cycles (topological sort incomplete)".into());
         }
-
         Ok(result)
     }
 
-    /// Compile the graph into a format suitable for C++
+    /// Compile into the C FFI structures.
     pub fn compile(&self) -> Result<(Vec<NodeDesc>, Vec<NodeConnection>, Vec<u32>), String> {
-        // Get execution order
-        let execution_order = self.topological_sort()?;
+        let exec_order = self.topological_sort()?;
 
-        // Convert nodes to NodeDesc
-        let mut node_descs = Vec::new();
-        let mut node_id_to_idx = HashMap::new();
+        let node_descs: Vec<NodeDesc> = exec_order.iter().map(|&id| {
+            let n = &self.nodes[&id];
+            NodeDesc { node_id: id, node_type: n.node_type, num_inputs: n.num_inputs, num_outputs: n.num_outputs }
+        }).collect();
 
-        for (idx, &node_id) in execution_order.iter().enumerate() {
-            node_id_to_idx.insert(node_id, idx as u32);
-            let node = &self.nodes[&node_id];
-            node_descs.push(NodeDesc {
-                node_id,
-                node_type: node.node_type,
-                num_inputs: node.num_inputs,
-                num_outputs: node.num_outputs,
-            });
-        }
+        let connections: Vec<NodeConnection> = self.edges.iter().map(|e| NodeConnection {
+            from_node_id: e.from_node_id,
+            from_output_idx: e.from_output_idx,
+            to_node_id: e.to_node_id,
+            to_input_idx: e.to_input_idx,
+        }).collect();
 
-        // Convert edges
-        let node_connections = self
-            .edges
-            .iter()
-            .map(|e| NodeConnection {
-                from_node_id: e.from_node_id,
-                from_output_idx: e.from_output_idx,
-                to_node_id: e.to_node_id,
-                to_input_idx: e.to_input_idx,
-            })
-            .collect();
-
-        Ok((node_descs, node_connections, execution_order))
+        Ok((node_descs, connections, exec_order))
     }
 }
 
@@ -214,78 +161,43 @@ impl ShadowGraph {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_graph_validation() {
-        let mut graph = ShadowGraph::new(1);
-
-        let osc = Node {
-            id: 0,
-            node_type: NodeType::Oscillator,
-            num_inputs: 0,
-            num_outputs: 1,
-            parameters: HashMap::new(),
-        };
-
-        let filter = Node {
-            id: 1,
-            node_type: NodeType::Filter,
-            num_inputs: 1,
-            num_outputs: 1,
-            parameters: HashMap::new(),
-        };
-
-        graph.add_node(osc).unwrap();
-        graph.add_node(filter).unwrap();
-
-        let edge = Edge {
-            from_node_id: 0,
-            from_output_idx: 0,
-            to_node_id: 1,
-            to_input_idx: 0,
-        };
-
-        graph.add_edge(edge).unwrap();
-        assert!(graph.validate().is_ok());
+    fn make_node(id: u32, t: NodeType, ni: u32, no: u32) -> Node {
+        Node { id, node_type: t, num_inputs: ni, num_outputs: no, parameters: HashMap::new() }
     }
 
     #[test]
-    fn test_topological_sort() {
-        let mut graph = ShadowGraph::new(2);
-
-        for i in 0..3 {
-            let node = Node {
-                id: i,
-                node_type: if i == 0 {
-                    NodeType::Oscillator
-                } else {
-                    NodeType::Filter
-                },
-                num_inputs: if i == 0 { 0 } else { 1 },
-                num_outputs: 1,
-                parameters: HashMap::new(),
-            };
-            graph.add_node(node).unwrap();
-        }
-
-        // 0 -> 1 -> 2
-        graph
-            .add_edge(Edge {
-                from_node_id: 0,
-                from_output_idx: 0,
-                to_node_id: 1,
-                to_input_idx: 0,
-            })
-            .unwrap();
-        graph
-            .add_edge(Edge {
-                from_node_id: 1,
-                from_output_idx: 0,
-                to_node_id: 2,
-                to_input_idx: 0,
-            })
-            .unwrap();
-
-        let order = graph.topological_sort().unwrap();
+    fn linear_chain() {
+        let mut g = ShadowGraph::new(2);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
+        g.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 }).unwrap();
+        g.add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 }).unwrap();
+        let order = g.topological_sort().unwrap();
         assert_eq!(order, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn detect_cycle() {
+        let mut g = ShadowGraph::new(0);
+        g.add_node(make_node(0, NodeType::Filter, 1, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 }).unwrap();
+        g.add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 0, to_input_idx: 0 }).unwrap();
+        assert!(g.validate().is_err());
+    }
+
+    #[test]
+    fn non_contiguous_ids() {
+        // IDs 10, 20, 30 — would crash the old vec-indexed cycle detection
+        let mut g = ShadowGraph::new(30);
+        g.add_node(make_node(10, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(20, NodeType::Filter, 1, 1)).unwrap();
+        g.add_node(make_node(30, NodeType::Output, 1, 0)).unwrap();
+        g.add_edge(Edge { from_node_id: 10, from_output_idx: 0, to_node_id: 20, to_input_idx: 0 }).unwrap();
+        g.add_edge(Edge { from_node_id: 20, from_output_idx: 0, to_node_id: 30, to_input_idx: 0 }).unwrap();
+        assert!(g.validate().is_ok());
+        let (_, _, order) = g.compile().unwrap();
+        assert_eq!(order, vec![10, 20, 30]);
     }
 }

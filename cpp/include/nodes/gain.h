@@ -28,9 +28,9 @@ public:
 
     void set_param(uint32_t param_hash, float value) override
     {
-        if (param_hash == ParamHash::GAIN_LEVEL)
+        if (param_hash == ParamHash::GAIN_LEVEL || param_hash == ParamHash::FREQ)
         {
-            target_gain = std::fmax(0.0f, std::fmin(value, 2.0f));
+            target_gain = std::fmax(0.0f, std::fmin(value, 10.0f));
         }
     }
 
@@ -54,8 +54,10 @@ public:
         float *out = outputs[0];
 
         // If no input connected, output silence
-        if (!in || !out) {
-            if (out) std::memset(out, 0, num_samples * sizeof(float));
+        if (!in || !out)
+        {
+            if (out)
+                std::memset(out, 0, num_samples * sizeof(float));
             return;
         }
 

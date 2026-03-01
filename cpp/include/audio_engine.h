@@ -113,7 +113,11 @@ extern "C"
         uint32_t midi_queue_capacity,
         const void *midi_queue_head,
         const void *midi_queue_tail,
-        StatusRegister *status_register);
+        StatusRegister *status_register,
+        float *output_ring_buffer,
+        uint32_t output_ring_capacity,
+        void *output_ring_head,
+        const void *output_ring_tail);
 
     /// Start the audio engine (spawns background audio thread).
     /// Returns 0 on success, -1 on failure.

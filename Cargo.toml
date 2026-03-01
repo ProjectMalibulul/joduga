@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust"]
+members = ["rust", "tauri-ui/src-tauri"]
 resolver = "2"
 
 [profile.release]

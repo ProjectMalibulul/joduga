@@ -1,19 +1,18 @@
+/// Lock-free SPSC ring buffer for real-time audio communication.
+///
+/// Writer: Rust UI thread (params / MIDI).  Reader: C++ audio thread.
+///
+/// Properties:
+/// - Zero allocations after init
+/// - Wait-free reader, lock-free writer
+/// - Cache-line padding avoids false sharing
+
 use std::ptr;
-/// Lock-free SPSC (Single Producer, Single Consumer) ring buffer for real-time safety.
-///
-/// This is the core synchronization mechanism between the Rust UI thread and the
-/// C++ audio thread. The Rust thread writes commands (parameter updates, MIDI events),
-/// and the C++ audio thread reads and drains them.
-///
-/// Key properties:
-/// - Zero allocations after initialization
-/// - No mutexes (wait-free reader, lock-free writer)
-/// - Cache-line aligned to avoid false sharing
-/// - Typical usage: 8KB ring buffer for ~500 parameter updates per block
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// Parameter update command (16 bytes, aligned to cache line)
+// ── Shared command types (repr(C), 16 bytes each) ──────────────────────
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ParamUpdateCmd {
@@ -23,7 +22,6 @@ pub struct ParamUpdateCmd {
     pub padding: u32,
 }
 
-/// MIDI event command (16 bytes)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MIDIEventCmd {
@@ -33,7 +31,6 @@ pub struct MIDIEventCmd {
     pub timestamp_samples: u32,
 }
 
-/// Status register shared between Rust and C++
 #[repr(C)]
 #[derive(Debug)]
 pub struct StatusRegister {
@@ -42,122 +39,64 @@ pub struct StatusRegister {
     pub reserved: [u32; 2],
 }
 
-/// Lock-free ring buffer for SPSC communication
+// ── Ring buffer ────────────────────────────────────────────────────────
+
 pub struct LockFreeRingBuffer<T: Clone + Copy> {
     buffer: Vec<T>,
-    head: Arc<AtomicUsize>, // Write pointer (Rust thread)
-    tail: Arc<AtomicUsize>, // Read pointer (C++ thread)
+    head: Arc<AtomicUsize>,
+    tail: Arc<AtomicUsize>,
     mask: usize,
 }
 
 impl<T: Clone + Copy> LockFreeRingBuffer<T> {
-    /// Create a new ring buffer with capacity (must be power of 2)
     pub fn new(capacity: usize) -> Self {
-        assert!(capacity.is_power_of_two(), "Capacity must be a power of 2");
-
-        let buffer = vec![unsafe { std::mem::zeroed() }; capacity];
-        LockFreeRingBuffer {
-            buffer,
+        assert!(capacity.is_power_of_two(), "Capacity must be power of 2");
+        Self {
+            buffer: vec![unsafe { std::mem::zeroed() }; capacity],
             head: Arc::new(AtomicUsize::new(0)),
             tail: Arc::new(AtomicUsize::new(0)),
             mask: capacity - 1,
         }
     }
 
-    /// Get a pointer to the raw buffer (for FFI)
-    pub fn as_ptr(&self) -> *const T {
-        self.buffer.as_ptr()
-    }
+    // ── FFI pointers ────────────────────────────────────────────────
 
-    /// Get mutable pointer (for C++ to write into)
-    pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.buffer.as_mut_ptr()
-    }
+    pub fn as_ptr(&self) -> *const T { self.buffer.as_ptr() }
+    pub fn head_ptr(&self) -> *const AtomicUsize { self.head.as_ref() }
+    pub fn tail_ptr(&self) -> *const AtomicUsize { self.tail.as_ref() }
+    pub fn capacity(&self) -> usize { self.buffer.len() }
 
-    /// Enqueue an item (Rust side, can block if full)
+    // ── Producer (Rust thread) ──────────────────────────────────────
+
     pub fn enqueue(&self, item: T) -> Result<(), T> {
         let head = self.head.load(Ordering::Acquire);
-        let next_head = (head + 1) & self.mask;
-        let tail = self.tail.load(Ordering::Acquire);
-
-        if next_head == tail {
-            // Buffer is full
-            return Err(item);
+        let next = (head + 1) & self.mask;
+        if next == self.tail.load(Ordering::Acquire) {
+            return Err(item); // full
         }
-
-        unsafe {
-            ptr::write((self.buffer.as_ptr() as *mut T).add(head), item);
-        }
-
-        self.head.store(next_head, Ordering::Release);
+        unsafe { ptr::write((self.buffer.as_ptr() as *mut T).add(head), item); }
+        self.head.store(next, Ordering::Release);
         Ok(())
     }
 
-    /// Enqueue multiple items (Rust side)
-    pub fn enqueue_slice(&self, items: &[T]) -> usize {
-        let mut written = 0;
-        for item in items {
-            if self.enqueue(*item).is_ok() {
-                written += 1;
-            } else {
-                break;
-            }
-        }
-        written
-    }
+    // ── Consumer (C++ thread reads directly; this is for tests) ─────
 
-    /// Dequeue items into a buffer (C++ side, called from audio thread)
-    /// Returns the number of items dequeued
     pub fn dequeue(&self, out: &mut [T]) -> usize {
         let tail = self.tail.load(Ordering::Acquire);
         let head = self.head.load(Ordering::Acquire);
-
-        let available = if head >= tail {
-            head - tail
-        } else {
-            self.buffer.len() - tail + head
-        };
-
-        let to_read = std::cmp::min(available, out.len());
-
-        for i in 0..to_read {
-            out[i] = unsafe {
-                ptr::read((self.buffer.as_ptr() as *const T).add((tail + i) & self.mask))
-            };
+        let avail = if head >= tail { head - tail } else { self.buffer.len() - tail + head };
+        let n = avail.min(out.len());
+        for i in 0..n {
+            out[i] = unsafe { ptr::read(self.buffer.as_ptr().add((tail + i) & self.mask)) };
         }
-
-        if to_read > 0 {
-            self.tail
-                .store((tail + to_read) & self.mask, Ordering::Release);
-        }
-
-        to_read
+        if n > 0 { self.tail.store((tail + n) & self.mask, Ordering::Release); }
+        n
     }
 
-    /// Get pointer to head index (for C++ to read)
-    pub fn head_ptr(&self) -> *const AtomicUsize {
-        self.head.as_ref()
-    }
-
-    /// Get pointer to tail index (for C++ to write)
-    pub fn tail_ptr(&self) -> *const AtomicUsize {
-        self.tail.as_ref()
-    }
-
-    /// Get capacity
-    pub fn capacity(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Get approximate number of items in the buffer
     pub fn len(&self) -> usize {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        if head >= tail {
-            head - tail
-        } else {
-            self.buffer.len() - tail + head
-        }
+        let h = self.head.load(Ordering::Relaxed);
+        let t = self.tail.load(Ordering::Relaxed);
+        if h >= t { h - t } else { self.buffer.len() - t + h }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -170,29 +109,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_enqueue_dequeue() {
-        let queue = LockFreeRingBuffer::<u32>::new(4);
-
-        assert!(queue.enqueue(10).is_ok());
-        assert!(queue.enqueue(20).is_ok());
-
+    fn enqueue_dequeue() {
+        let q = LockFreeRingBuffer::<u32>::new(4);
+        assert!(q.enqueue(10).is_ok());
+        assert!(q.enqueue(20).is_ok());
         let mut out = [0u32; 2];
-        let n = queue.dequeue(&mut out);
-        assert_eq!(n, 2);
-        assert_eq!(out[0], 10);
-        assert_eq!(out[1], 20);
+        assert_eq!(q.dequeue(&mut out), 2);
+        assert_eq!(out, [10, 20]);
     }
 
     #[test]
-    fn test_wrap_around() {
-        let queue = LockFreeRingBuffer::<u32>::new(4);
-
-        for i in 0..8 {
-            queue.enqueue(i).unwrap();
-        }
-
-        let mut out = [0u32; 4];
-        queue.dequeue(&mut out);
-        assert_eq!(out[0], 4);
+    fn full_returns_err() {
+        let q = LockFreeRingBuffer::<u32>::new(4);
+        // capacity=4 → usable slots=3 (one wasted to distinguish full/empty)
+        assert!(q.enqueue(1).is_ok());
+        assert!(q.enqueue(2).is_ok());
+        assert!(q.enqueue(3).is_ok());
+        assert!(q.enqueue(4).is_err());
     }
 }

@@ -108,17 +108,49 @@ public:
     }
 };
 
-/// Parameter hash constants (FNV-1a 32-bit)
+/// Parameter hash constants — must match Rust H_FREQ / H_RES exactly.
+/// The primary hash (FREQ) is reused across node types since dispatch is per-node.
 namespace ParamHash
 {
-    // Oscillator
-    constexpr uint32_t OSC_FREQUENCY = 2166136261u ^ ('f' ^ 'r' ^ 'e' ^ 'q');
-    constexpr uint32_t OSC_AMPLITUDE = 2166136261u ^ ('a' ^ 'm' ^ 'p');
+    // ── Primary shared hashes (match Rust constants) ────────────────
+    constexpr uint32_t FREQ = 0x811C9DC5u; // H_FREQ — freq / cutoff / level / threshold
+    constexpr uint32_t RES = 0x050C5D2Eu;  // H_RES  — resonance / Q / bandwidth
 
-    // Filter
-    constexpr uint32_t FILTER_CUTOFF = 2166136261u ^ ('c' ^ 'u' ^ 't');
-    constexpr uint32_t FILTER_RESONANCE = 2166136261u ^ ('r' ^ 'e' ^ 's');
+    // Per-type aliases
+    constexpr uint32_t OSC_FREQUENCY = FREQ;
+    constexpr uint32_t FILTER_CUTOFF = FREQ;
+    constexpr uint32_t FILTER_RESONANCE = RES;
+    constexpr uint32_t GAIN_LEVEL = FREQ;
 
-    // Gain
-    constexpr uint32_t GAIN_LEVEL = 2166136261u ^ ('g' ^ 'a' ^ 'i' ^ 'n');
+    // ── Sub-type selectors ──────────────────────────────────────────
+    constexpr uint32_t WAVEFORM_TYPE = 0x000000ADu; // oscillator waveform
+    constexpr uint32_t FILTER_MODE = 0x000000BDu;   // filter type (LP/HP/BP/…)
+
+    // ── Oscillator extra params ─────────────────────────────────────
+    constexpr uint32_t DUTY_CYCLE = 0xA1u;
+    constexpr uint32_t FM_MOD_DEPTH = 0xA3u;
+    constexpr uint32_t FM_MOD_FREQ = 0xA4u;
+    constexpr uint32_t AM_MOD_DEPTH = 0xA5u;
+    constexpr uint32_t AM_MOD_FREQ = 0xA6u;
+    constexpr uint32_t DETUNE = 0xA9u;
+
+    // ── Filter extra params ─────────────────────────────────────────
+    constexpr uint32_t COMB_DELAY = 0xB1u;
+    constexpr uint32_t COMB_FEEDBACK = 0xB2u;
+    constexpr uint32_t PARAMETRIC_Q = 0xB7u;
+
+    // ── Dynamics extra params ───────────────────────────────────────
+    constexpr uint32_t RATIO = 0xC1u;
+    constexpr uint32_t ATTACK = 0xC2u;
+    constexpr uint32_t RELEASE = 0xC3u;
+
+    // ── Effects extra params ────────────────────────────────────────
+    constexpr uint32_t DELAY_TIME = 0xD1u;
+    constexpr uint32_t DELAY_FEEDBACK = 0xD2u;
+    constexpr uint32_t MIX = 0xD3u;
+    constexpr uint32_t DRIVE = 0xE1u;
+    constexpr uint32_t TONE = 0xE2u;
+
+    // ── Modulator extra params ──────────────────────────────────────
+    constexpr uint32_t DEPTH = 0x10u;
 }

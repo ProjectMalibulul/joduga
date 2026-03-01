@@ -1,32 +1,19 @@
+/// Joduga Audio Engine — Rust middleware layer
+///
+/// 1. Graph validation and topological sorting  (`shadow_graph`)
+/// 2. FFI bridge to the C++ real-time DSP engine  (`ffi`)
+/// 3. Lock-free SPSC queues for parameter & MIDI updates  (`lockfree_queue`)
+/// 4. Safe wrapper with cpal audio output  (`audio_engine_wrapper`)
+/// 5. MIDI input handling  (`midi_input`)
+
 pub mod audio_engine_wrapper;
 pub mod ffi;
-/// Joduga Audio Engine - Rust middleware layer
-///
-/// This layer is responsible for:
-/// 1. Graph validation and topological sorting
-/// 2. Communicating with the C++ DSP engine via FFI
-/// 3. Managing lock-free queues for real-time parameter updates
-/// 4. Handling MIDI input
-/// 5. Interfacing with Tauri for the React frontend
 pub mod lockfree_queue;
 pub mod midi_input;
 pub mod shadow_graph;
 
-pub use audio_engine_wrapper::AudioEngineWrapper;
+pub use audio_engine_wrapper::{AudioEngineWrapper, OutputRingBuffer};
 pub use ffi::{AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc, NodeType};
 pub use lockfree_queue::{LockFreeRingBuffer, MIDIEventCmd, ParamUpdateCmd, StatusRegister};
+pub use midi_input::MidiInputHandler;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_lockfree_queue_basics() {
-        let queue = LockFreeRingBuffer::<u32>::new(16);
-        queue.enqueue(42).unwrap();
-        let mut out = [0u32; 1];
-        let n = queue.dequeue(&mut out);
-        assert_eq!(n, 1);
-        assert_eq!(out[0], 42);
-    }
-}

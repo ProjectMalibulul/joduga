@@ -1,46 +1,80 @@
+//! Safe Rust wrapper around the C++ audio engine FFI.
+//!
+//! Owns the lock-free queues, output ring buffer, and engine lifetime.
+//! Automatic cleanup on drop — stops the engine and frees C++ resources.
+
 use crate::ffi::{
-    audio_engine_destroy, audio_engine_init, audio_engine_is_running, audio_engine_start,
-    audio_engine_stop, AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc,
-    NodeType,
+    audio_engine_destroy, audio_engine_init, audio_engine_is_running,
+    audio_engine_start, audio_engine_stop,
+    AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc,
 };
 use crate::lockfree_queue::{LockFreeRingBuffer, MIDIEventCmd, ParamUpdateCmd, StatusRegister};
-use std::sync::atomic::AtomicUsize;
-/// Safe Rust wrapper around the C++ audio engine FFI.
-///
-/// This provides:
-/// - Automatic initialization and cleanup
-/// - Safe lock-free queue management
-/// - A high-level API for starting/stopping the engine
-/// - Proper error handling
+
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// High-level wrapper for the audio engine
+/// High-level wrapper for the C++ audio engine.
 pub struct AudioEngineWrapper {
     engine: *mut AudioEngine,
-
-    // Keep the queues alive as long as the engine is running
+    // Queues must outlive the engine — Drop order is field-declaration order.
     param_queue: Box<LockFreeRingBuffer<ParamUpdateCmd>>,
     midi_queue: Box<LockFreeRingBuffer<MIDIEventCmd>>,
+    #[allow(dead_code)] // kept alive for C++ to read
     status_register: Box<StatusRegister>,
-
+    output_ring: Arc<OutputRingBuffer>,
     sample_rate: u32,
     block_size: u32,
 }
 
+/// Lock-free SPSC ring buffer shared between C++ audio thread (writer)
+/// and the cpal output callback (reader).  Capacity must be a power of two
+/// so that index masking works correctly.
+pub struct OutputRingBuffer {
+    buffer: Vec<f32>,
+    pub head: AtomicUsize,
+    pub tail: AtomicUsize,
+    mask: usize,
+}
+
+impl OutputRingBuffer {
+    pub fn new(capacity: usize) -> Self {
+        assert!(capacity.is_power_of_two(), "capacity must be power-of-two");
+        Self {
+            buffer: vec![0.0_f32; capacity],
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            mask: capacity - 1,
+        }
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.mask + 1
+    }
+
+    /// Pointer to the backing store (for C++ FFI).
+    pub fn as_ptr(&self) -> *const f32 {
+        self.buffer.as_ptr()
+    }
+
+    /// Read up to `dest.len()` samples; returns the count actually read.
+    pub fn read(&self, dest: &mut [f32]) -> usize {
+        let head = self.head.load(Ordering::Acquire);
+        let tail = self.tail.load(Ordering::Relaxed);
+        let available = head.wrapping_sub(tail) & self.mask;
+        let n = dest.len().min(available);
+        for i in 0..n {
+            dest[i] = self.buffer[(tail + i) & self.mask];
+        }
+        if n > 0 {
+            self.tail.store((tail + n) & self.mask, Ordering::Release);
+        }
+        n
+    }
+}
+
 impl AudioEngineWrapper {
-    /// Initialize a new audio engine with the given graph.
-    ///
-    /// # Arguments:
-    /// - nodes: Vector of NodeDesc structures
-    /// - edges: Vector of connections between nodes
-    /// - execution_order: Topologically sorted node indices
-    /// - output_node_id: ID of the final output node
-    /// - sample_rate: Sample rate in Hz (typically 48000)
-    /// - block_size: Number of samples to process per block (typically 256-512)
-    /// - cpu_core: CPU core to pin the audio thread to
-    ///
-    /// # Returns:
-    /// Ok(AudioEngineWrapper) on success, Err(String) on failure
+    /// Build and initialise the C++ engine from a compiled graph.
     pub fn new(
         nodes: Vec<NodeDesc>,
         edges: Vec<NodeConnection>,
@@ -50,118 +84,106 @@ impl AudioEngineWrapper {
         block_size: u32,
         cpu_core: u32,
     ) -> Result<Self, String> {
-        // Create lock-free queues
-        let param_queue = LockFreeRingBuffer::<ParamUpdateCmd>::new(8192); // 8KB
-        let midi_queue = LockFreeRingBuffer::<MIDIEventCmd>::new(4096); // 4KB
+        let param_queue = LockFreeRingBuffer::<ParamUpdateCmd>::new(8192);
+        let midi_queue = LockFreeRingBuffer::<MIDIEventCmd>::new(4096);
         let mut status_register = Box::new(StatusRegister {
             graph_version: 0,
             adopted_version: 0,
             reserved: [0, 0],
         });
 
-        // Allocate storage for graph structures
+        // Build CompiledGraph from owned vecs.
+        // The C++ side copies the data in audio_engine_init, so we reclaim
+        // the memory immediately after the call.
         let num_nodes = nodes.len() as u32;
         let num_edges = edges.len() as u32;
         let num_order = execution_order.len() as u32;
 
-        let nodes_ptr = Box::into_raw(nodes.into_boxed_slice()) as *const NodeDesc;
-        let edges_ptr = Box::into_raw(edges.into_boxed_slice()) as *const NodeConnection;
-        let order_ptr = Box::into_raw(execution_order.into_boxed_slice()) as *const u32;
+        let mut nodes_box = nodes.into_boxed_slice();
+        let mut edges_box = edges.into_boxed_slice();
+        let mut order_box = execution_order.into_boxed_slice();
 
-        // Create CompiledGraph
         let graph = CompiledGraph {
-            nodes: nodes_ptr,
+            nodes: nodes_box.as_mut_ptr() as *const NodeDesc,
             num_nodes,
-            connections: edges_ptr,
+            connections: edges_box.as_mut_ptr() as *const NodeConnection,
             num_connections: num_edges,
-            execution_order: order_ptr,
+            execution_order: order_box.as_mut_ptr() as *const u32,
             num_in_order: num_order,
             output_node_id,
         };
 
-        let config = AudioEngineConfig {
-            sample_rate,
-            block_size,
-            cpu_core,
-        };
+        let config = AudioEngineConfig { sample_rate, block_size, cpu_core };
 
-        // Get raw pointers for lock-free structures
-        let param_q_ptr = param_queue.as_ptr();
-        let param_q_cap = param_queue.capacity() as u32;
-        let param_head_ptr = param_queue.head_ptr();
-        let param_tail_ptr = param_queue.tail_ptr();
+        // 64K samples ~ 1.3 s at 48 kHz
+        let output_ring = Arc::new(OutputRingBuffer::new(65536));
 
-        let midi_q_ptr = midi_queue.as_ptr();
-        let midi_q_cap = midi_queue.capacity() as u32;
-        let midi_head_ptr = midi_queue.head_ptr();
-        let midi_tail_ptr = midi_queue.tail_ptr();
-
-        // Unsafe FFI call
+        // SAFETY: all pointers point into heap allocations that outlive this
+        // call. C++ copies graph data and stores ring-buffer pointers.
         let engine = unsafe {
             audio_engine_init(
                 &graph,
                 &config,
-                param_q_ptr as *const std::ffi::c_void,
-                param_q_cap,
-                param_head_ptr as *const std::ffi::c_void,
-                param_tail_ptr as *const std::ffi::c_void,
-                midi_q_ptr as *const std::ffi::c_void,
-                midi_q_cap,
-                midi_head_ptr as *const std::ffi::c_void,
-                midi_tail_ptr as *const std::ffi::c_void,
+                param_queue.as_ptr()  as *const std::ffi::c_void,
+                param_queue.capacity() as u32,
+                param_queue.head_ptr() as *const std::ffi::c_void,
+                param_queue.tail_ptr() as *const std::ffi::c_void,
+                midi_queue.as_ptr()    as *const std::ffi::c_void,
+                midi_queue.capacity()  as u32,
+                midi_queue.head_ptr()  as *const std::ffi::c_void,
+                midi_queue.tail_ptr()  as *const std::ffi::c_void,
                 &mut *status_register,
+                output_ring.as_ptr() as *mut f32,
+                output_ring.capacity() as u32,
+                &output_ring.head as *const AtomicUsize as *mut std::ffi::c_void,
+                &output_ring.tail as *const AtomicUsize as *const std::ffi::c_void,
             )
         };
 
+        // graph slices are freed here (drop of nodes_box / edges_box / order_box)
+        drop(nodes_box);
+        drop(edges_box);
+        drop(order_box);
+
         if engine.is_null() {
-            return Err("Failed to initialize audio engine".to_string());
+            return Err("C++ audio_engine_init returned null".into());
         }
 
-        Ok(AudioEngineWrapper {
+        Ok(Self {
             engine,
             param_queue: Box::new(param_queue),
             midi_queue: Box::new(midi_queue),
             status_register,
+            output_ring,
             sample_rate,
             block_size,
         })
     }
 
-    /// Start the audio engine (spawns the real-time audio thread)
+    /// Start the real-time audio thread.
     pub fn start(&mut self) -> Result<(), String> {
-        let ret = unsafe { audio_engine_start(self.engine) };
-        if ret != 0 {
-            Err("Failed to start audio engine".to_string())
-        } else {
-            Ok(())
+        match unsafe { audio_engine_start(self.engine) } {
+            0 => Ok(()),
+            code => Err(format!("audio_engine_start failed (code {code})")),
         }
     }
 
-    /// Stop the audio engine gracefully
+    /// Stop the audio thread gracefully.
     pub fn stop(&mut self) -> Result<(), String> {
-        let ret = unsafe { audio_engine_stop(self.engine) };
-        if ret != 0 {
-            Err("Failed to stop audio engine".to_string())
-        } else {
-            Ok(())
+        match unsafe { audio_engine_stop(self.engine) } {
+            0 => Ok(()),
+            code => Err(format!("audio_engine_stop failed (code {code})")),
         }
     }
 
-    /// Send a parameter update to a node
+    /// Enqueue a parameter change for the audio thread.
     pub fn set_param(&self, node_id: u32, param_hash: u32, value: f32) -> Result<(), String> {
-        let cmd = ParamUpdateCmd {
-            node_id,
-            param_hash,
-            value,
-            padding: 0,
-        };
-
         self.param_queue
-            .enqueue(cmd)
-            .map_err(|_| "Parameter queue full".to_string())
+            .enqueue(ParamUpdateCmd { node_id, param_hash, value, padding: 0 })
+            .map_err(|_| "param queue full".into())
     }
 
-    /// Send a MIDI event
+    /// Enqueue a MIDI event for the audio thread.
     pub fn send_midi_event(
         &self,
         event_type: u32,
@@ -169,77 +191,35 @@ impl AudioEngineWrapper {
         velocity: u32,
         timestamp_samples: u32,
     ) -> Result<(), String> {
-        let cmd = MIDIEventCmd {
-            event_type,
-            pitch,
-            velocity,
-            timestamp_samples,
-        };
-
         self.midi_queue
-            .enqueue(cmd)
-            .map_err(|_| "MIDI queue full".to_string())
+            .enqueue(MIDIEventCmd { event_type, pitch, velocity, timestamp_samples })
+            .map_err(|_| "MIDI queue full".into())
     }
 
-    /// Check if the audio engine is running
     pub fn is_running(&self) -> bool {
         unsafe { audio_engine_is_running(self.engine) != 0 }
     }
 
-    /// Get sample rate
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
+    pub fn sample_rate(&self) -> u32 { self.sample_rate }
+    pub fn block_size(&self) -> u32 { self.block_size }
 
-    /// Get block size
-    pub fn block_size(&self) -> u32 {
-        self.block_size
+    /// Clone the `Arc` to the output ring for the cpal callback.
+    pub fn output_ring(&self) -> Arc<OutputRingBuffer> {
+        Arc::clone(&self.output_ring)
     }
 }
 
 impl Drop for AudioEngineWrapper {
     fn drop(&mut self) {
         if !self.engine.is_null() {
-            // Stop if running
             let _ = self.stop();
-
-            // Destroy
             unsafe { audio_engine_destroy(self.engine) };
             self.engine = std::ptr::null_mut();
         }
     }
 }
 
-// Unsafe is OK here because we manage lifetime via Drop
+// SAFETY: The wrapper is the sole owner of the engine pointer and all shared
+// state is behind atomic operations or lock-free queues.
 unsafe impl Send for AudioEngineWrapper {}
 unsafe impl Sync for AudioEngineWrapper {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_param_queue() {
-        let queue = Arc::new(LockFreeRingBuffer::<ParamUpdateCmd>::new(256));
-
-        let cmd = ParamUpdateCmd {
-            node_id: 1,
-            param_hash: 42,
-            value: 3.14,
-            padding: 0,
-        };
-
-        assert!(queue.enqueue(cmd).is_ok());
-
-        let mut out = [ParamUpdateCmd {
-            node_id: 0,
-            param_hash: 0,
-            value: 0.0,
-            padding: 0,
-        }; 1];
-
-        let n = queue.dequeue(&mut out);
-        assert_eq!(n, 1);
-        assert_eq!(out[0].node_id, 1);
-    }
-}

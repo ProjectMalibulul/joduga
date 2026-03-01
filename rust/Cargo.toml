@@ -10,15 +10,23 @@ crate-type = ["cdylib", "rlib"]
 name = "joduga"
 path = "src/main.rs"
 
+[[bin]]
+name = "joduga-ui"
+path = "src/ui_main.rs"
+required-features = ["egui-ui"]
+
+[features]
+default = ["egui-ui"]
+egui-ui = ["eframe", "egui", "egui_plot"]
+
 [dependencies]
-tauri = { version = "2" }
-tokio = { version = "1", features = ["full"] }
+eframe = { version = "0.31", optional = true }
+egui = { version = "0.31", optional = true }
+egui_plot = { version = "0.31", optional = true }
+cpal = "0.15"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-parking_lot = "0.12"
-crossbeam = "0.8"
 midir = "0.9"
-libc = "0.2"
 
 # Build dependencies
 [build-dependencies]
