@@ -1,240 +1,166 @@
 # Joduga - Real-Time Node-Based Audio Synthesizer
 
-A high-performance, modular audio synthesizer built with **Rust**, **C++**, and **Tauri**. Designed for ultra-low latency DSP processing with lock-free inter-thread communication.
+A high-performance, modular audio synthesizer built with **Rust**, **C++**, and **Tauri + React Flow**. Ultra-low latency DSP processing with lock-free inter-thread communication and a visual node graph editor.
 
 ---
 
-## 🎯 Architecture Overview
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  FRONTEND (Tauri + React + ReactFlow)                   │
-│  - Visual node graph editor                             │
-│  - Parameter controls (knobs, sliders)                  │
-│  - MIDI keyboard visualization                          │
-└──────────────────┬──────────────────────────────────────┘
-                   │ Tauri IPC
-┌──────────────────▼──────────────────────────────────────┐
-│  RUST MIDDLEWARE                                        │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │ • Shadow Graph (validation, topological sort)     │  │
-│  │ • Lock-free command queues (SPSC ring buffers)    │  │
-│  │ • MIDI input handling (midir)                     │  │
-│  │ • FFI bridge to C++ audio engine                  │  │
-│  └───────────────────────────────────────────────────┘  │
-└──────────────────┬──────────────────────────────────────┘
-                   │ Lock-Free Queues (Zero-Copy FFI)
-┌──────────────────▼──────────────────────────────────────┐
-│  C++ AUDIO ENGINE                                       │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │ • SCHED_FIFO real-time thread (Linux)             │  │
-│  │ • Block-based DSP processing (256 samples/block)  │  │
-│  │ • Cache-coherent node graph execution             │  │
-│  │ • Zero-allocation audio callback                  │  │
-│  └───────────────────────────────────────────────────┘  │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │ DSP Nodes: Oscillator, Filter, Gain, ADSR, etc.  │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
++-----------------------------------------------------------+
+|  FRONTEND  (Tauri + React + React Flow)                   |
+|  - Visual node graph editor (67 node types)               |
+|  - Parameter sliders (log/linear, live update)            |
+|  - Drag-and-drop from categorised sidebar                 |
++------------------------+----------------------------------+
+                         | Tauri IPC
++------------------------v----------------------------------+
+|  RUST MIDDLEWARE                                          |
+|  - Shadow Graph (validation, topological sort)            |
+|  - Lock-free SPSC ring buffers (param + MIDI queues)      |
+|  - cpal audio output (reads from C++ ring buffer)         |
+|  - MIDI input handling (midir)                            |
+|  - FFI bridge to C++ audio engine                         |
++------------------------+----------------------------------+
+                         | Lock-Free Queues (Zero-Copy FFI)
++------------------------v----------------------------------+
+|  C++ AUDIO ENGINE                                         |
+|  - SCHED_FIFO real-time thread (Linux)                    |
+|  - Block-based DSP (256 samples/block)                    |
+|  - Cache-coherent node graph execution                    |
+|  - Zero-allocation audio callback                         |
+|  - DSP: Oscillator, Filter (biquad+comb), Gain, Output   |
++-----------------------------------------------------------+
 ```
 
 ---
 
-## 🚀 Key Features
+## Features
 
-### 1. **Lock-Free Real-Time Architecture**
-- **Zero mutexes** on the audio thread—all synchronization uses lock-free SPSC ring buffers
-- Audio thread runs at **SCHED_FIFO priority** (Linux) or **THREAD_PRIORITY_TIME_CRITICAL** (Windows)
-- **CPU core affinity** to isolate the audio thread from system interrupts
-
-### 2. **Hot-Swappable Parameter Updates**
-- Turn knobs and adjust parameters **while audio is playing** without dropouts
-- Parameter changes are batched and applied at block boundaries for smooth transitions
-- Automatic parameter smoothing prevents clicks/pops
-
-### 3. **Graph Validation & Cycle Detection**
-- Rust layer validates the graph topology before sending to C++
-- **Topological sorting** ensures correct execution order
-- Detects and rejects **algebraic loops** (feedback without delay nodes)
-
-### 4. **MIDI Integration**
-- Native MIDI input support via `midir`
-- MIDI events bypass the UI and are injected directly into the audio thread
-- Supports Note On/Off, Control Change, Pitch Bend
-
-### 5. **Block-Based DSP Processing**
-- Processes **256-512 samples at a time** for SIMD optimization opportunities
-- Minimizes FFI boundary crossings (only occurs during graph updates, not per-sample)
+- **Lock-free real-time audio** -- zero mutexes on the audio thread; SPSC ring buffers for all inter-thread communication.
+- **Live parameter tweaking** -- sliders update the C++ engine in real time via lock-free param queue. No dropouts.
+- **Graph validation** -- Rust validates topology, detects cycles, and computes execution order before handing off to C++.
+- **cpal audio output** -- ring buffer written by C++ is consumed by a cpal stream for system audio playback.
+- **MIDI input** -- native MIDI via midir; events injected directly into the audio thread.
+- **67-node catalog** -- Oscillators, Filters, Dynamics, Effects, Modulators, Utility, Output.
+- **Zed-inspired UI** -- minimal dark theme, monospace typography, clean node design.
 
 ---
 
-## 📦 Project Structure
+## Project Structure
 
 ```
 joduga/
-├── Cargo.toml              # Rust workspace root
-├── CMakeLists.txt          # C++ build configuration
-│
-├── rust/                   # Rust middleware & FFI layer
-│   ├── src/
-│   │   ├── lib.rs                    # Main library
-│   │   ├── main.rs                   # Test entry point
-│   │   ├── lockfree_queue.rs         # SPSC ring buffer
-│   │   ├── ffi.rs                    # C++ FFI bindings
-│   │   ├── shadow_graph.rs           # Graph validation & sorting
-│   │   ├── audio_engine_wrapper.rs   # Safe Rust wrapper
-│   │   └── midi_input.rs             # MIDI input handling
-│   ├── build.rs            # CMake build script
-│   └── Cargo.toml
-│
-└── cpp/                    # C++ audio DSP engine
-    ├── include/
-    │   ├── audio_engine.h            # C FFI interface
-    │   ├── audio_node.h              # Base node class
-    │   ├── nodes/
-    │   │   ├── oscillator.h          # Sine oscillator
-    │   │   ├── filter.h              # 2nd-order butterworth LPF
-    │   │   └── gain.h                # Linear amplitude scaler
-    │   └── platform/
-    │       └── rt_platform.h         # Real-time thread utilities
-    │
-    └── src/
-        ├── audio_engine.cpp          # Core engine & audio loop
-        ├── nodes/
-        │   ├── oscillator.cpp
-        │   ├── filter.cpp
-        │   └── gain.cpp
-        └── platform/
-            ├── linux_rt.cpp          # Linux SCHED_FIFO
-            └── windows_rt.cpp        # Windows RT priority
++-- Cargo.toml              # Rust workspace root
++-- CMakeLists.txt          # C++ build config
++-- rust/                   # Rust middleware + FFI
+|   +-- src/
+|       +-- lib.rs
+|       +-- ffi.rs                   # C++ FFI bindings
+|       +-- shadow_graph.rs          # Graph validation + topo sort
+|       +-- audio_engine_wrapper.rs  # Safe engine wrapper + ring buffer
+|       +-- lockfree_queue.rs        # SPSC ring buffer
+|       +-- midi_input.rs            # MIDI input
+|       +-- main.rs                  # CLI test harness
++-- cpp/                    # C++ audio DSP engine
+|   +-- include/
+|   +-- src/
+|       +-- audio_engine.cpp         # Core engine + audio loop
+|       +-- nodes/                   # Oscillator, Filter, Gain
+|       +-- platform/                # Linux/Windows RT threads
++-- tauri-ui/               # Tauri + React Flow frontend
+    +-- src/
+    |   +-- App.tsx                  # Main app layout
+    |   +-- AudioNode.tsx            # Custom node component
+    |   +-- catalog.ts               # 67 node templates
+    |   +-- store.ts                 # Zustand state management
+    |   +-- styles.css               # Zed-inspired theme
+    |   +-- types.ts                 # Shared TypeScript types
+    +-- src-tauri/
+        +-- src/main.rs              # Tauri backend (engine + cpal)
 ```
 
 ---
 
-## 🛠️ Building & Running
+## Building and Running
 
 ### Prerequisites
 
-**Linux:**
 ```bash
-# Install dependencies
-sudo apt install build-essential cmake libasound2-dev
+# Linux (Debian/Ubuntu)
+sudo apt install build-essential cmake libasound2-dev nodejs npm
+
+# Tauri CLI
+cargo install tauri-cli
 ```
 
-**Pop!_OS / Ubuntu:**
-```bash
-# For real-time audio permissions
-sudo usermod -a -G audio $USER
-```
-
-### Build
+### Development
 
 ```bash
-cd joduga
-cargo build --release
+cd joduga/tauri-ui
+cargo tauri dev
 ```
 
 This will:
-1. Use CMake to compile the C++ audio engine (`libjoduga_audio.so`)
-2. Compile the Rust middleware and link against the C++ library
+1. Start the Vite dev server (port 1420)
+2. Build the C++ audio engine via CMake
+3. Compile the Rust backend and open the Tauri window
 
-### Run the Test
+### Production Build
 
 ```bash
-cargo run --release
+cd joduga/tauri-ui
+cargo tauri build
 ```
 
-Expected output:
-```
-🎵 Joduga Audio Engine Test
-============================
+### CLI Test (no UI)
 
-✓ Graph created with 4 nodes and 3 edges
-✓ Graph validated (no cycles detected)
-✓ Graph compiled successfully
-  Execution order: [0, 1, 2, 3]
-
-🔊 Initializing audio engine...
-✓ Audio engine initialized
-  Sample rate: 48000 Hz
-  Block size: 256 samples
-✓ Audio engine started (real-time thread running)
-
-⏳ Processing audio for 5 seconds...
-
-🎛️  Testing parameter updates:
-  • Setting oscillator frequency to 880 Hz
-  • Setting filter cutoff to 2000 Hz
-
-🛑 Stopping audio engine...
-✓ Audio engine stopped gracefully
-
-✅ Test completed successfully!
+```bash
+cargo run --release --bin joduga
 ```
 
----
-
-## 🔬 System Design Decisions
-
-### Why C++ Owns the Audio Thread?
-- **Minimal latency:** C++ can immediately set SCHED_FIFO and pin to a CPU core
-- **Zero FFI overhead during processing:** The audio callback never crosses back into Rust
-- **Deterministic:** No Rust runtime interactions (GC, async) during audio processing
-
-### Why Lock-Free Queues?
-- **Priority inversion avoidance:** Traditional mutexes can cause the audio thread to block
-- **Wait-free reads:** The audio thread can always read without blocking
-- **Cache-coherent:** Ring buffers are allocated contiguously for optimal cache performance
-
-### Why Topological Sort in Rust?
-- **Safety:** Rust's type system prevents invalid graph mutations
-- **Validation before execution:** C++ trusts the Rust-provided execution order
-- **Debugging:** Easier to inspect graph topology in high-level Rust code
+Runs a headless test: Osc -> Filter -> Gain -> Output for a few seconds.
 
 ---
 
-## 🎛️ DSP Nodes Implemented
+## Usage
 
-| Node Type   | Description                          | Parameters                |
-|-------------|--------------------------------------|---------------------------|
-| Oscillator  | Sine wave generator                  | `frequency` (Hz)          |
-| Filter      | 2nd-order Butterworth low-pass       | `cutoff` (Hz), `resonance`|
-| Gain        | Linear amplitude scaler              | `gain` (0.0-2.0)          |
-| Output      | Final output (DAC interface)         | None                      |
+1. Launch with `cargo tauri dev`
+2. Drag nodes from the sidebar onto the canvas (or double-click to add)
+3. Connect nodes by dragging between handles (output -> input)
+4. Click **Play** to start the audio engine
+5. Adjust parameters with sliders -- changes apply in real time
+6. Click **Stop** to shut down the engine
 
----
-
-## 🐛 Known Limitations (MVP)
-
-- ❌ No audio device I/O yet (currently just processes in a loop)
-- ❌ ADSR envelopes not implemented
-- ❌ No reverb/delay effects
-- ❌ Frontend (Tauri/React) not integrated yet
-- ❌ Output node doesn't write to speakers (stub implementation)
+Minimal patch: **Sine Oscillator** -> **Speaker Output** -> click Play.
 
 ---
 
-## 🚧 Next Steps
+## Design Decisions
 
-1. **Audio Device I/O:** Integrate `cpal` or RtAudio to write processed audio to the system's audio output
-2. **ADSR Envelope:** Implement attack/decay/sustain/release envelope for MIDI-triggered notes
-3. **Frontend:** Build the React node graph editor with ReactFlow
-4. **More Nodes:** Add reverb, delay, more oscillator types (saw, square, triangle)
-5. **Node Deletion:** Support removing nodes dynamically from the running graph
+**C++ owns the audio thread** -- SCHED_FIFO, CPU pinning, zero FFI during processing. The audio callback never crosses back into Rust.
 
----
+**Lock-free queues** -- avoid priority inversion. The audio thread never blocks. Ring buffers are cache-coherent.
 
-## 📜 License
+**Topological sort in Rust** -- type-safe graph validation before C++ trusts the execution order.
 
-MIT License - See `LICENSE` file for details
+**cpal for output** -- the C++ engine writes to a shared ring buffer; a cpal stream on the Rust side reads it and sends to the system audio device.
 
 ---
 
-## 🙏 Acknowledgments
+## DSP Nodes
 
-This project is built for a **CS Engineering student** who is also a **pianist**. The design prioritizes:
-- **Low-latency MIDI response** (< 5ms latency from key press to audio output)
-- **Cache-friendly DSP code** (block-based processing, SIMD-ready)
-- **Deterministic real-time behavior** (no allocations on audio thread)
+| Type       | Implemented                                     |
+|------------|------------------------------------------------ |
+| Oscillator | Sine, multi-waveform (square, saw, triangle)    |
+| Filter     | 2nd-order biquad (LP, HP, BP, notch), comb      |
+| Gain       | Linear amplitude scaler                          |
+| Output     | Final output (feeds ring buffer -> cpal -> DAC)  |
 
-Built with love for systems programming and digital signal processing. 🎹✨
+The catalog includes 67 UI nodes mapped to these 4 engine types. Additional node types (reverb, delay, compressor, etc.) are represented in the UI but map to existing engine types with parameter-driven behaviour.
+
+---
+
+## License
+
+MIT License -- see LICENSE file.

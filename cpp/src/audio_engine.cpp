@@ -282,48 +282,48 @@ extern "C"
         return reinterpret_cast<AudioEngine *>(g_audio_engine);
     }
 
-int audio_engine_start(AudioEngine *engine_opaque)
-{
-    auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
-    if (!e)
-        return -1;
-    e->is_running.store(true, std::memory_order_release);
-    e->audio_thread = std::thread(audio_thread_main, e);
-    return 0;
-}
+    int audio_engine_start(AudioEngine *engine_opaque)
+    {
+        auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
+        if (!e)
+            return -1;
+        e->is_running.store(true, std::memory_order_release);
+        e->audio_thread = std::thread(audio_thread_main, e);
+        return 0;
+    }
 
-int audio_engine_stop(AudioEngine *engine_opaque)
-{
-    auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
-    if (!e)
-        return -1;
-    e->is_running.store(false, std::memory_order_release);
-    if (e->audio_thread.joinable())
-        e->audio_thread.join();
-    return 0;
-}
+    int audio_engine_stop(AudioEngine *engine_opaque)
+    {
+        auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
+        if (!e)
+            return -1;
+        e->is_running.store(false, std::memory_order_release);
+        if (e->audio_thread.joinable())
+            e->audio_thread.join();
+        return 0;
+    }
 
-void audio_engine_destroy(AudioEngine *engine_opaque)
-{
-    auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
-    if (!e)
-        return;
-    if (e->is_running.load(std::memory_order_acquire))
-        audio_engine_stop(engine_opaque);
-    delete e;
-    g_audio_engine = nullptr;
-}
+    void audio_engine_destroy(AudioEngine *engine_opaque)
+    {
+        auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
+        if (!e)
+            return;
+        if (e->is_running.load(std::memory_order_acquire))
+            audio_engine_stop(engine_opaque);
+        delete e;
+        g_audio_engine = nullptr;
+    }
 
-uint64_t audio_engine_get_sample_count(const AudioEngine *engine_opaque)
-{
-    auto *e = reinterpret_cast<const AudioEngineImpl *>(engine_opaque);
-    return e ? e->sample_count.load(std::memory_order_acquire) : 0;
-}
+    uint64_t audio_engine_get_sample_count(const AudioEngine *engine_opaque)
+    {
+        auto *e = reinterpret_cast<const AudioEngineImpl *>(engine_opaque);
+        return e ? e->sample_count.load(std::memory_order_acquire) : 0;
+    }
 
-uint8_t audio_engine_is_running(const AudioEngine *engine_opaque)
-{
-    auto *e = reinterpret_cast<const AudioEngineImpl *>(engine_opaque);
-    return (e && e->is_running.load(std::memory_order_acquire)) ? 1 : 0;
-}
+    uint8_t audio_engine_is_running(const AudioEngine *engine_opaque)
+    {
+        auto *e = reinterpret_cast<const AudioEngineImpl *>(engine_opaque);
+        return (e && e->is_running.load(std::memory_order_acquire)) ? 1 : 0;
+    }
 
 } // extern "C"

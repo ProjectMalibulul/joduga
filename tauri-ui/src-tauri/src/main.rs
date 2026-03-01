@@ -2,18 +2,21 @@
 //!
 //! Exposes `start_engine`, `stop_engine`, and `set_param` commands
 //! to the React frontend via the Tauri IPC bridge.
+//! Opens a cpal output stream so audio from the C++ engine ring buffer
+//! is actually played through the system audio device.
 
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use joduga::{
-    audio_engine_wrapper::AudioEngineWrapper,
+    audio_engine_wrapper::{AudioEngineWrapper, OutputRingBuffer},
     ffi::NodeType,
     shadow_graph::{Edge, Node, ShadowGraph},
 };
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 
-/* ── types received from the frontend ──────────────────────── */
+/* -- types received from the frontend ----------------------- */
 
 #[derive(Deserialize)]
 pub struct ParamPair {
@@ -39,11 +42,22 @@ pub struct EngineEdgeInfo {
     pub to_port: u32,
 }
 
-/* ── managed state ─────────────────────────────────────────── */
+/* -- managed state ------------------------------------------ */
 
-struct EngineState(Mutex<Option<AudioEngineWrapper>>);
+struct EngineState(Mutex<Option<RunningEngine>>);
 
-/* ── helpers ───────────────────────────────────────────────── */
+/// Holds both the C++ engine wrapper and the cpal stream.
+/// The stream must be kept alive for audio to play.
+struct RunningEngine {
+    wrapper: AudioEngineWrapper,
+    _stream: cpal::Stream,
+}
+
+// cpal::Stream is !Send, but we only touch it behind a Mutex on the main thread
+unsafe impl Send for RunningEngine {}
+unsafe impl Sync for RunningEngine {}
+
+/* -- helpers ------------------------------------------------ */
 
 fn parse_engine_type(s: &str) -> NodeType {
     match s {
@@ -51,11 +65,42 @@ fn parse_engine_type(s: &str) -> NodeType {
         "Filter" => NodeType::Filter,
         "Gain" => NodeType::Gain,
         "Output" => NodeType::Output,
-        _ => NodeType::Gain, // fallback
+        _ => NodeType::Gain,
     }
 }
 
-/* ── commands ──────────────────────────────────────────────── */
+/// Open a cpal output stream that reads from the engine ring buffer.
+fn open_cpal_stream(
+    ring: Arc<OutputRingBuffer>,
+    sample_rate: u32,
+) -> Result<cpal::Stream, String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or("No audio output device found")?;
+    let config = cpal::StreamConfig {
+        channels: 1,
+        sample_rate: cpal::SampleRate(sample_rate),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |buffer: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let n = ring.read(buffer);
+                for sample in &mut buffer[n..] {
+                    *sample = 0.0;
+                }
+            },
+            |err| eprintln!("cpal error: {err}"),
+            None,
+        )
+        .map_err(|e| format!("{e}"))?;
+    stream.play().map_err(|e| format!("{e}"))?;
+    Ok(stream)
+}
+
+/* -- commands ----------------------------------------------- */
 
 #[tauri::command]
 fn start_engine(
@@ -67,7 +112,7 @@ fn start_engine(
 
     // Stop previous engine if running
     if let Some(ref mut eng) = *guard {
-        let _ = eng.stop();
+        let _ = eng.wrapper.stop();
     }
     *guard = None;
 
@@ -107,12 +152,14 @@ fn start_engine(
     graph.validate().map_err(|e| e.to_string())?;
     let (compiled_nodes, compiled_edges, order) = graph.compile().map_err(|e| e.to_string())?;
 
+    let sample_rate = 48000_u32;
+
     let mut engine = AudioEngineWrapper::new(
         compiled_nodes,
         compiled_edges,
         order,
         output_id,
-        48000,
+        sample_rate,
         256,
         0,
     )?;
@@ -124,8 +171,15 @@ fn start_engine(
         }
     }
 
+    // Open cpal output stream BEFORE starting engine
+    let ring = engine.output_ring();
+    let stream = open_cpal_stream(ring, sample_rate)?;
+
     engine.start()?;
-    *guard = Some(engine);
+    *guard = Some(RunningEngine {
+        wrapper: engine,
+        _stream: stream,
+    });
     Ok(())
 }
 
@@ -133,8 +187,11 @@ fn start_engine(
 fn stop_engine(state: State<'_, EngineState>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut eng) = *guard {
-        eng.stop()?;
+        if let Err(e) = eng.wrapper.stop() {
+            eprintln!("stop_engine warning: {e}");
+        }
     }
+    // Always drop the RunningEngine (kills cpal stream + C++ engine)
     *guard = None;
     Ok(())
 }
@@ -148,12 +205,12 @@ fn set_param(
 ) -> Result<(), String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref eng) = *guard {
-        eng.set_param(node_id, param_hash, value)?;
+        eng.wrapper.set_param(node_id, param_hash, value)?;
     }
     Ok(())
 }
 
-/* ── entry point ───────────────────────────────────────────── */
+/* -- entry point -------------------------------------------- */
 
 fn main() {
     tauri::Builder::default()
