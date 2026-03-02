@@ -2,31 +2,38 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [ test/ci ]
   pull_request:
-    branches: [main]
-
-env:
-  CARGO_TERM_COLOR: always
+    branches: [ test/ci ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install system dependencies
+      - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libasound2-dev libgtk-3-dev \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            patchelf libssl-dev
+          sudo apt-get install -y build-essential cmake g++ libgtk-3-dev \
+            libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev \
+            libssl-dev libsecret-1-dev patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'        # or whichever Node version your frontend needs
+          cache: 'npm'
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry & build
+      - name: Cache cargo (registry + git)
         uses: actions/cache@v4
         with:
           path: |
@@ -37,8 +44,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build
-        run: cargo build --release
+      - name: Install tauri CLI
+        run: |
+          cargo install --force tauri-cli
 
-      - name: Run test harness
-        run: cargo run --bin joduga --release
+      - name: Install frontend deps
+        working-directory: ./src   # adjust to your frontend folder (or '.' if root)
+        run: |
+          npm ci
+
+      - name: Build frontend
+        working-directory: ./src
+        run: |
+          npm run build
+
+      - name: Build backend (Rust)
+        run: |
+          cargo build --release
+
+      - name: Build Tauri bundle
+        run: |
+          # cargo tauri build assumes frontend build outputs are available
+          cargo tauri build --release
+
+      - name: Run Rust unit tests
+        run: cargo test --release
