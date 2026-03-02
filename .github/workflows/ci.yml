@@ -76,7 +76,7 @@ jobs:
       # -------------------------
       - name: Build Tauri (release)
         working-directory: tauri-ui
-        run: cargo tauri build
+        run: npm run tauri build
 
       # -------------------------
       # Run Rust tests
