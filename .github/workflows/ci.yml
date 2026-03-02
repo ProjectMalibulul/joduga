@@ -111,4 +111,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: joduga-linux-deb
-          path: tauri-ui/target/release/bundle/deb/*.deb
+          path: target/release/bundle/deb/*.deb
