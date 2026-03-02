@@ -2,70 +2,91 @@ name: CI
 
 on:
   push:
-    branches: [ test/ci ]
+    branches: [main]
   pull_request:
-    branches: [ test/ci ]
+    branches: [main]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+
     env:
       CARGO_TERM_COLOR: always
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Install system packages
+      # -------------------------
+      # System dependencies
+      # -------------------------
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake g++ libgtk-3-dev \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            libssl-dev libsecret-1-dev patchelf
+          sudo apt-get install -y \
+            build-essential cmake g++ \
+            libasound2-dev libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev libssl-dev \
+            libsecret-1-dev patchelf
 
-      - name: Setup Node.js
+      # -------------------------
+      # Node (Frontend)
+      # -------------------------
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '18'        # or whichever Node version your frontend needs
+          node-version: 18
           cache: 'npm'
+          cache-dependency-path: tauri-ui/package-lock.json
 
-      - name: Install Rust toolchain
+      - name: Install frontend deps
+        working-directory: tauri-ui
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: tauri-ui
+        run: npm run build
+
+      # -------------------------
+      # Rust Toolchain
+      # -------------------------
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo (registry + git)
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install tauri CLI
-        run: |
-          cargo install --force tauri-cli
+      - name: Install Tauri CLI
+        run: cargo install --force tauri-cli
 
-      - name: Install frontend deps
-        working-directory: ./src   # adjust to your frontend folder (or '.' if root)
+      # -------------------------
+      # Build C++ Engine (optional explicit step)
+      # -------------------------
+      - name: Build C++ engine
         run: |
-          npm ci
+          mkdir -p build
+          cd build
+          cmake ..
+          make -j$(nproc)
 
-      - name: Build frontend
-        working-directory: ./src
-        run: |
-          npm run build
-
-      - name: Build backend (Rust)
-        run: |
-          cargo build --release
-
+      # -------------------------
+      # Build Tauri App
+      # -------------------------
       - name: Build Tauri bundle
-        run: |
-          # cargo tauri build assumes frontend build outputs are available
-          cargo tauri build --release
+        working-directory: tauri-ui
+        run: cargo tauri build --release
 
-      - name: Run Rust unit tests
-        run: cargo test --release
+      # -------------------------
+      # Run Rust tests
+      # -------------------------
+      - name: Run Rust tests
+        run: cargo test --workspace --release
