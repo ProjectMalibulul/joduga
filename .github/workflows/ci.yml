@@ -30,7 +30,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libsecret-1-dev patchelf \
             libfuse2
-        
+
       # -------------------------
       # Node (Frontend)
       # -------------------------
@@ -38,7 +38,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: 'npm'
+          cache: "npm"
           cache-dependency-path: tauri-ui/package-lock.json
 
       - name: Install frontend deps
@@ -91,3 +91,10 @@ jobs:
       # -------------------------
       - name: Run Rust tests
         run: cargo test --workspace
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: joduga-linux-package
+          # Using wildcards (*) handles the versioning and architecture automatically
+          path: "**/target/release/bundle/deb/*.deb"
