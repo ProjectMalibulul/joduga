@@ -1,4 +1,5 @@
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
-    "-C", "link-arg=-Wl,-rpath,/usr/lib/Joduga/libs"
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../lib/joduga",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN",
 ]

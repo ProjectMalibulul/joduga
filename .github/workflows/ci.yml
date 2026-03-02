@@ -67,21 +67,41 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      # -------------------------
+      # Build & Stage C++ Audio Engine
+      # -------------------------
+      - name: Build and stage C++ audio engine
+        run: |
+          cmake -S . -B cmake-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build cmake-build -j$(nproc)
+          mkdir -p tauri-ui/external_libs
+          # Copy the real .so file (with soversion) for Tauri resource bundling
+          cp -a cmake-build/libjoduga_audio.so.0* tauri-ui/external_libs/ 2>/dev/null || true
+          # Ensure the exact filename Tauri expects exists
+          if [ ! -f tauri-ui/external_libs/libjoduga_audio.so.0 ]; then
+            cp cmake-build/libjoduga_audio.so tauri-ui/external_libs/libjoduga_audio.so.0
+          fi
+          ls -la tauri-ui/external_libs/
 
       # -------------------------
       # Build Tauri App
       # -------------------------
       - name: Build Tauri (release)
         working-directory: tauri-ui
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/cmake-build:${{ github.workspace }}/tauri-ui/external_libs
         run: npm run tauri build
 
       # -------------------------
       # Run Rust tests
       # -------------------------
       - name: Run Rust tests
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/cmake-build:${{ github.workspace }}/tauri-ui/external_libs
         run: cargo test --workspace --release
 
       # -------------------------
