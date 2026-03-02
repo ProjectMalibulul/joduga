@@ -83,10 +83,10 @@ jobs:
       # -------------------------
       - name: Build Tauri bundle
         working-directory: tauri-ui
-        run: cargo tauri build -- --release
+        run: cargo tauri build
 
       # -------------------------
       # Run Rust tests
       # -------------------------
       - name: Run Rust tests
-        run: cargo test --workspace -- --release
+        run: cargo test --workspace
