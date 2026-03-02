@@ -78,7 +78,8 @@ jobs:
           cd build
           cmake ..
           make -j$(nproc)
-
+          mkdir -p ../tauri-ui/external_libs
+          cp libjoduga_audio.so ../tauri-ui/external_libs/
       # -------------------------
       # Build Tauri App
       # -------------------------
