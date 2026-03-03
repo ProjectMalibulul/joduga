@@ -65,6 +65,8 @@ fn parse_engine_type(s: &str) -> NodeType {
         "Filter" => NodeType::Filter,
         "Gain" => NodeType::Gain,
         "Output" => NodeType::Output,
+        "Delay" => NodeType::Delay,
+        "Effects" => NodeType::Effects,
         _ => NodeType::Gain,
     }
 }
@@ -163,6 +165,18 @@ fn start_engine(
     for n in &nodes {
         for p in &n.params {
             let _ = engine.set_param(n.id, p.hash, p.value);
+        }
+        // Send mode-select param so the C++ node initialises to the right subtype
+        let mode_hash: Option<u32> = match n.engine_type.as_str() {
+            "Oscillator" => Some(0xAD),
+            "Filter" => Some(0xBD),
+            "Gain" => Some(0xCF),
+            "Delay" => Some(0xCD),
+            "Effects" => Some(0xCE),
+            _ => None,
+        };
+        if let Some(h) = mode_hash {
+            let _ = engine.set_param(n.id, h, n.engine_subtype as f32);
         }
     }
 

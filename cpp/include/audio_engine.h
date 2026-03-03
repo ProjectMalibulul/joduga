@@ -25,6 +25,8 @@ extern "C"
         NODE_TYPE_FILTER = 1,
         NODE_TYPE_GAIN = 2,
         NODE_TYPE_OUTPUT = 3,
+        NODE_TYPE_DELAY = 4,
+        NODE_TYPE_EFFECTS = 5,
     } NodeType;
 
     /// Node description (must match Rust CompiledGraph layout)

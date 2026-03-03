@@ -21,6 +21,8 @@ pub enum NodeType {
     Filter = 1,
     Gain = 2,
     Output = 3,
+    Delay = 4,
+    Effects = 5,
 }
 
 // ── repr(C) structs ─────────────────────────────────────────────────────
@@ -107,5 +109,7 @@ mod tests {
         assert_eq!(NodeType::Filter as i32, 1);
         assert_eq!(NodeType::Gain as i32, 2);
         assert_eq!(NodeType::Output as i32, 3);
+        assert_eq!(NodeType::Delay as i32, 4);
+        assert_eq!(NodeType::Effects as i32, 5);
     }
 }

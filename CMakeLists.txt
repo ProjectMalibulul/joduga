@@ -41,6 +41,8 @@ add_library(joduga_audio STATIC
   cpp/src/nodes/oscillator.cpp
   cpp/src/nodes/filter.cpp
   cpp/src/nodes/gain.cpp
+  cpp/src/nodes/delay.cpp
+  cpp/src/nodes/effects.cpp
   ${PLATFORM_SOURCES}
 )
 

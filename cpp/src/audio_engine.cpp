@@ -6,6 +6,8 @@
 #include "nodes/oscillator.h"
 #include "nodes/filter.h"
 #include "nodes/gain.h"
+#include "nodes/delay.h"
+#include "nodes/effects.h"
 #include "platform/rt_platform.h"
 
 #include <thread>
@@ -88,6 +90,12 @@ static std::unique_ptr<AudioNode> create_node(NodeType type, uint32_t node_id)
     case NODE_TYPE_GAIN:
     case NODE_TYPE_OUTPUT:
         node = std::make_unique<GainNode>();
+        break;
+    case NODE_TYPE_DELAY:
+        node = std::make_unique<DelayNode>();
+        break;
+    case NODE_TYPE_EFFECTS:
+        node = std::make_unique<EffectsNode>();
         break;
     default:
         std::cerr << "[joduga] Unknown node type: " << type << "\n";

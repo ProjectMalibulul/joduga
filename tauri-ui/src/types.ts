@@ -17,7 +17,7 @@ export interface NodeTemplate {
     color: string;
     numInputs: number;
     numOutputs: number;
-    engineType: "Oscillator" | "Filter" | "Gain" | "Output";
+    engineType: "Oscillator" | "Filter" | "Gain" | "Output" | "Delay" | "Effects";
     /** Sub-type index sent to C++ (waveform type or filter mode) */
     engineSubtype: number;
     params: ParamDef[];

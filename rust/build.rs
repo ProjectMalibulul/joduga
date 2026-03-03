@@ -15,22 +15,24 @@ fn main() {
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=static=joduga_audio");
 
-    // Static C++ library needs the C++ standard library at link time
-    #[cfg(target_os = "linux")]
-    {
-        println!("cargo:rustc-link-lib=stdc++");
-        println!("cargo:rustc-link-lib=pthread");
-        println!("cargo:rustc-link-lib=rt");
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        println!("cargo:rustc-link-lib=c++");
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        println!("cargo:rustc-link-lib=winmm");
+    // Static C++ library needs the C++ standard library at link time.
+    // Use CARGO_CFG_TARGET_OS (runtime env) instead of #[cfg(target_os)]
+    // so the detection is always correct regardless of host/target combo.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    match target_os.as_str() {
+        "linux" => {
+            println!("cargo:rustc-link-lib=stdc++");
+            println!("cargo:rustc-link-lib=pthread");
+            println!("cargo:rustc-link-lib=rt");
+        }
+        "macos" => {
+            println!("cargo:rustc-link-lib=c++");
+            println!("cargo:rustc-link-lib=framework=CoreFoundation");
+        }
+        "windows" => {
+            println!("cargo:rustc-link-lib=winmm");
+        }
+        _ => {}
     }
 
     // Rerun if CMakeLists.txt or any C++ file changes

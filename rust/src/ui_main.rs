@@ -78,12 +78,13 @@ struct NodeTemplate {
     num_inputs: usize,
     num_outputs: usize,
     engine_type: NodeType,
+    subtype: i32,
     params: Vec<ParamDef>,
 }
 
 fn catalog() -> Vec<NodeTemplate> {
     use NodeType::*;
-    let t = |name, cat, icon, col, ni, no, et, ps: Vec<ParamDef>| NodeTemplate {
+    let t = |name, cat, icon, col, ni, no, et, sub, ps: Vec<ParamDef>| NodeTemplate {
         name,
         category: cat,
         icon,
@@ -91,10 +92,14 @@ fn catalog() -> Vec<NodeTemplate> {
         num_inputs: ni,
         num_outputs: no,
         engine_type: et,
+        subtype: sub,
         params: ps,
     };
     vec![
         // ── Oscillators (14) ─────────────────────────────────────────
+        // WAVEFORM_TYPE (0xAD): SINE=0, SQUARE=1, SAW=2, TRIANGLE=3,
+        //   WHITE_NOISE=4, PINK_NOISE=5, BROWN_NOISE=6, FM=7, AM=8,
+        //   WAVETABLE=9, SUB=10, SUPER_SAW=11, ADDITIVE=12
         t(
             "Sine Oscillator",
             "Oscillators",
@@ -103,6 +108,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            0,
             vec![pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz")],
         ),
         t(
@@ -113,6 +119,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            1,
             vec![
                 pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
                 pd("Duty Cycle", 0xA1, 0.01, 0.99, 0.5, false, ""),
@@ -126,6 +133,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            2,
             vec![pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz")],
         ),
         t(
@@ -136,6 +144,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            3,
             vec![pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz")],
         ),
         t(
@@ -146,6 +155,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            1,
             vec![
                 pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
                 pd("Width", 0xA2, 0.01, 0.99, 0.5, false, ""),
@@ -159,6 +169,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            4,
             vec![pd("Amplitude", H_FREQ, 0.0, 1.0, 0.5, false, "")],
         ),
         t(
@@ -169,6 +180,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            5,
             vec![pd("Amplitude", H_FREQ, 0.0, 1.0, 0.5, false, "")],
         ),
         t(
@@ -179,6 +191,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            6,
             vec![pd("Amplitude", H_FREQ, 0.0, 1.0, 0.5, false, "")],
         ),
         t(
@@ -189,6 +202,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            7,
             vec![
                 pd("Carrier", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
                 pd("Mod Depth", 0xA3, 0.0, 10.0, 1.0, false, ""),
@@ -203,6 +217,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            8,
             vec![
                 pd("Carrier", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
                 pd("Mod Depth", 0xA5, 0.0, 1.0, 0.5, false, ""),
@@ -217,6 +232,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            9,
             vec![
                 pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
                 pd("Position", 0xA7, 0.0, 1.0, 0.0, false, ""),
@@ -230,6 +246,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            10,
             vec![
                 pd("Frequency", H_FREQ, 20.0, 20000.0, 110.0, true, "Hz"),
                 pd("Octave", 0xA8, -3.0, 0.0, -1.0, false, ""),
@@ -243,6 +260,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            11,
             vec![
                 pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
                 pd("Detune", 0xA9, 0.0, 1.0, 0.3, false, ""),
@@ -257,6 +275,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            12,
             vec![
                 pd("Fundamental", H_FREQ, 20.0, 5000.0, 220.0, true, "Hz"),
                 pd("Harmonics", 0xAB, 1.0, 32.0, 8.0, false, ""),
@@ -264,6 +283,10 @@ fn catalog() -> Vec<NodeTemplate> {
             ],
         ),
         // ── Filters (18) ────────────────────────────────────────────
+        // FILTER_MODE (0xBD): LP=0, HP=1, BP=2, NOTCH=3, AP=4, COMB=5,
+        //   FORMANT=6, MOOG=7, SVF=8, PEAK_EQ=9, LOW_SHELF=10,
+        //   HIGH_SHELF=11, TILT=12, DC_BLOCK=13, MOVING_AVG=14,
+        //   CROSSOVER=15, RESONATOR=16, VOWEL=17
         t(
             "Low-Pass Filter",
             "Filters",
@@ -272,6 +295,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            0,
             vec![
                 pd("Cutoff", H_FREQ, 20.0, 20000.0, 5000.0, true, "Hz"),
                 pd("Resonance", H_RES, 0.1, 12.0, 0.707, false, ""),
@@ -285,6 +309,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            1,
             vec![
                 pd("Cutoff", H_FREQ, 20.0, 20000.0, 200.0, true, "Hz"),
                 pd("Resonance", H_RES, 0.1, 12.0, 0.707, false, ""),
@@ -298,6 +323,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            2,
             vec![
                 pd("Center", H_FREQ, 20.0, 20000.0, 1000.0, true, "Hz"),
                 pd("Bandwidth", H_RES, 0.1, 12.0, 1.0, false, ""),
@@ -311,6 +337,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            3,
             vec![
                 pd("Center", H_FREQ, 20.0, 20000.0, 1000.0, true, "Hz"),
                 pd("Width", H_RES, 0.1, 12.0, 1.0, false, ""),
@@ -324,6 +351,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            4,
             vec![pd("Cutoff", H_FREQ, 20.0, 20000.0, 1000.0, true, "Hz")],
         ),
         t(
@@ -334,6 +362,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            5,
             vec![
                 pd("Delay", 0xB1, 0.1, 50.0, 5.0, false, "ms"),
                 pd("Feedback", 0xB2, 0.0, 0.99, 0.7, false, ""),
@@ -347,6 +376,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            6,
             vec![
                 pd("Vowel", 0xB3, 0.0, 4.0, 0.0, false, ""),
                 pd("Shift", 0xB4, -12.0, 12.0, 0.0, false, "st"),
@@ -360,6 +390,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            7,
             vec![
                 pd("Cutoff", H_FREQ, 20.0, 20000.0, 2000.0, true, "Hz"),
                 pd("Resonance", H_RES, 0.0, 4.0, 1.0, false, ""),
@@ -374,6 +405,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            8,
             vec![
                 pd("Cutoff", H_FREQ, 20.0, 20000.0, 3000.0, true, "Hz"),
                 pd("Resonance", H_RES, 0.1, 10.0, 0.707, false, ""),
@@ -388,6 +420,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            9,
             vec![
                 pd("Frequency", H_FREQ, 20.0, 20000.0, 1000.0, true, "Hz"),
                 pd("Gain dB", H_RES, -18.0, 18.0, 0.0, false, "dB"),
@@ -402,6 +435,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            10,
             vec![
                 pd("Frequency", H_FREQ, 20.0, 5000.0, 200.0, true, "Hz"),
                 pd("Gain dB", H_RES, -18.0, 18.0, 0.0, false, "dB"),
@@ -415,6 +449,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            11,
             vec![
                 pd("Frequency", H_FREQ, 1000.0, 20000.0, 8000.0, true, "Hz"),
                 pd("Gain dB", H_RES, -18.0, 18.0, 0.0, false, "dB"),
@@ -428,6 +463,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            12,
             vec![
                 pd("Tilt dB", H_FREQ, -6.0, 6.0, 0.0, false, "dB"),
                 pd("Center", H_RES, 200.0, 5000.0, 1000.0, true, "Hz"),
@@ -441,6 +477,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            13,
             vec![pd("Cutoff", H_FREQ, 5.0, 80.0, 20.0, false, "Hz")],
         ),
         t(
@@ -451,6 +488,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            14,
             vec![pd("Window", 0xB8, 1.0, 128.0, 8.0, false, "samp")],
         ),
         t(
@@ -461,6 +499,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             2,
             Filter,
+            15,
             vec![
                 pd("Frequency", H_FREQ, 100.0, 10000.0, 1000.0, true, "Hz"),
                 pd("Order", 0xB9, 1.0, 4.0, 2.0, false, ""),
@@ -474,6 +513,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            16,
             vec![
                 pd("Frequency", H_FREQ, 50.0, 10000.0, 500.0, true, "Hz"),
                 pd("Decay", H_RES, 0.01, 5.0, 0.5, true, "s"),
@@ -487,12 +527,15 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Filter,
+            17,
             vec![
                 pd("Vowel", 0xBA, 0.0, 4.0, 0.0, false, ""),
                 pd("Q", H_RES, 0.5, 10.0, 2.0, false, ""),
             ],
         ),
         // ── Dynamics (7) ────────────────────────────────────────────
+        // GAIN_MODE (0xCF): SIMPLE_GAIN=0, COMPRESSOR=1, LIMITER=2,
+        //   GATE=3, EXPANDER=4
         t(
             "Gain",
             "Dynamics",
@@ -501,6 +544,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Gain,
+            0,
             vec![pd("Level", H_FREQ, 0.0, 2.0, 1.0, false, "")],
         ),
         t(
@@ -511,6 +555,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Gain,
+            0,
             vec![pd("Amount", H_FREQ, 0.0, 1.0, 0.5, false, "")],
         ),
         t(
@@ -521,6 +566,7 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Gain,
+            0,
             vec![pd("Level", H_FREQ, 0.0, 2.0, 1.0, false, "")],
         ),
         t(
@@ -531,8 +577,9 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Gain,
+            1,
             vec![
-                pd("Threshold", H_FREQ, -60.0, 0.0, -20.0, false, "dB"),
+                pd("Threshold", 0xC0, -60.0, 0.0, -20.0, false, "dB"),
                 pd("Ratio", 0xC1, 1.0, 20.0, 4.0, false, ":1"),
                 pd("Attack", 0xC2, 0.1, 100.0, 10.0, true, "ms"),
                 pd("Release", 0xC3, 10.0, 1000.0, 100.0, true, "ms"),
@@ -546,9 +593,10 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Gain,
+            2,
             vec![
-                pd("Threshold", H_FREQ, -20.0, 0.0, -3.0, false, "dB"),
-                pd("Release", 0xC4, 10.0, 500.0, 50.0, true, "ms"),
+                pd("Threshold", 0xC0, -20.0, 0.0, -3.0, false, "dB"),
+                pd("Release", 0xC3, 10.0, 500.0, 50.0, true, "ms"),
             ],
         ),
         t(
@@ -559,10 +607,11 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Gain,
+            3,
             vec![
-                pd("Threshold", H_FREQ, -80.0, 0.0, -40.0, false, "dB"),
-                pd("Attack", 0xC5, 0.1, 50.0, 1.0, true, "ms"),
-                pd("Release", 0xC6, 10.0, 500.0, 50.0, true, "ms"),
+                pd("Threshold", 0xC0, -80.0, 0.0, -40.0, false, "dB"),
+                pd("Attack", 0xC2, 0.1, 50.0, 1.0, true, "ms"),
+                pd("Release", 0xC3, 10.0, 500.0, 50.0, true, "ms"),
             ],
         ),
         t(
@@ -573,12 +622,19 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Gain,
+            4,
             vec![
-                pd("Threshold", H_FREQ, -60.0, 0.0, -30.0, false, "dB"),
-                pd("Ratio", 0xC7, 1.0, 10.0, 2.0, false, ":1"),
+                pd("Threshold", 0xC0, -60.0, 0.0, -30.0, false, "dB"),
+                pd("Ratio", 0xC1, 1.0, 10.0, 2.0, false, ":1"),
             ],
         ),
         // ── Effects (14) ────────────────────────────────────────────
+        // Delay-based → NODE_TYPE_DELAY, DELAY_MODE (0xCD):
+        //   SIMPLE_DELAY=0, REVERB=1, CHORUS=2, FLANGER=3,
+        //   PHASER=4, VIBRATO=5, PITCH_SHIFT=6
+        // Processing → NODE_TYPE_EFFECTS, EFFECTS_MODE (0xCE):
+        //   DISTORTION=0, OVERDRIVE=1, BITCRUSHER=2, RING_MOD=3,
+        //   WAVESHAPER=4, TREMOLO=5, STEREO_WIDENER=6
         t(
             "Delay",
             "Effects",
@@ -586,7 +642,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Filter,
+            Delay,
+            0,
             vec![
                 pd("Time", 0xD1, 1.0, 2000.0, 250.0, true, "ms"),
                 pd("Feedback", 0xD2, 0.0, 0.99, 0.5, false, ""),
@@ -600,7 +657,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Filter,
+            Delay,
+            1,
             vec![
                 pd("Size", 0xD4, 0.0, 1.0, 0.6, false, ""),
                 pd("Damping", 0xD5, 0.0, 1.0, 0.5, false, ""),
@@ -614,7 +672,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Filter,
+            Delay,
+            2,
             vec![
                 pd("Rate", 0xD7, 0.1, 10.0, 1.0, false, "Hz"),
                 pd("Depth", 0xD8, 0.0, 1.0, 0.5, false, ""),
@@ -628,7 +687,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Filter,
+            Delay,
+            3,
             vec![
                 pd("Rate", 0xDA, 0.05, 5.0, 0.5, false, "Hz"),
                 pd("Depth", 0xDB, 0.0, 1.0, 0.7, false, ""),
@@ -642,7 +702,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Filter,
+            Delay,
+            4,
             vec![
                 pd("Rate", 0xDD, 0.05, 5.0, 0.3, false, "Hz"),
                 pd("Depth", 0xDE, 0.0, 1.0, 0.6, false, ""),
@@ -656,7 +717,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Gain,
+            Effects,
+            0,
             vec![
                 pd("Drive", 0xE1, 0.0, 10.0, 3.0, false, ""),
                 pd("Tone", 0xE2, 0.0, 1.0, 0.5, false, ""),
@@ -670,7 +732,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Gain,
+            Effects,
+            1,
             vec![
                 pd("Drive", 0xE4, 0.0, 10.0, 2.0, false, ""),
                 pd("Tone", 0xE5, 0.0, 1.0, 0.6, false, ""),
@@ -683,7 +746,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Gain,
+            Effects,
+            2,
             vec![
                 pd("Bits", 0xE6, 1.0, 16.0, 8.0, false, ""),
                 pd("Downsample", 0xE7, 1.0, 64.0, 1.0, false, "x"),
@@ -696,7 +760,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Gain,
+            Effects,
+            3,
             vec![
                 pd("Frequency", 0xE8, 1.0, 5000.0, 200.0, true, "Hz"),
                 pd("Mix", 0xE9, 0.0, 1.0, 0.5, false, ""),
@@ -709,7 +774,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Gain,
+            Effects,
+            5,
             vec![
                 pd("Rate", 0xEA, 0.1, 20.0, 5.0, false, "Hz"),
                 pd("Depth", 0xEB, 0.0, 1.0, 0.5, false, ""),
@@ -722,7 +788,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Filter,
+            Delay,
+            5,
             vec![
                 pd("Rate", 0xEC, 0.1, 20.0, 5.0, false, "Hz"),
                 pd("Depth", 0xED, 0.0, 1.0, 0.3, false, ""),
@@ -735,7 +802,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Gain,
+            Effects,
+            4,
             vec![
                 pd("Amount", 0xEE, 0.0, 10.0, 1.0, false, ""),
                 pd("Symmetry", 0xEF, -1.0, 1.0, 0.0, false, ""),
@@ -748,7 +816,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Filter,
+            Delay,
+            6,
             vec![
                 pd("Semitones", 0xF0, -24.0, 24.0, 0.0, false, "st"),
                 pd("Mix", 0xF1, 0.0, 1.0, 1.0, false, ""),
@@ -761,7 +830,8 @@ fn catalog() -> Vec<NodeTemplate> {
             C_FX,
             1,
             1,
-            Gain,
+            Effects,
+            6,
             vec![pd("Width", 0xF2, 0.0, 2.0, 1.0, false, "")],
         ),
         // ── Modulators (6) ──────────────────────────────────────────
@@ -773,6 +843,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            0,
             vec![
                 pd("Rate", H_FREQ, 0.01, 50.0, 1.0, true, "Hz"),
                 pd("Depth", 0x10, 0.0, 1.0, 1.0, false, ""),
@@ -786,6 +857,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            1,
             vec![
                 pd("Rate", H_FREQ, 0.01, 50.0, 1.0, true, "Hz"),
                 pd("Depth", 0x11, 0.0, 1.0, 1.0, false, ""),
@@ -799,6 +871,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            3,
             vec![
                 pd("Rate", H_FREQ, 0.01, 50.0, 1.0, true, "Hz"),
                 pd("Depth", 0x12, 0.0, 1.0, 1.0, false, ""),
@@ -812,6 +885,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            4,
             vec![
                 pd("Rate", H_FREQ, 0.01, 50.0, 2.0, true, "Hz"),
                 pd("Depth", 0x13, 0.0, 1.0, 1.0, false, ""),
@@ -825,6 +899,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            0,
             vec![
                 pd("Attack", 0x14, 0.001, 5.0, 0.01, true, "s"),
                 pd("Decay", 0x15, 0.001, 5.0, 0.1, true, "s"),
@@ -840,6 +915,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            0,
             vec![
                 pd("Attack", 0x18, 0.001, 5.0, 0.01, true, "s"),
                 pd("Release", 0x19, 0.001, 10.0, 0.3, true, "s"),
@@ -854,6 +930,7 @@ fn catalog() -> Vec<NodeTemplate> {
             2,
             1,
             Gain,
+            0,
             vec![
                 pd("Ch A", 0x20, 0.0, 2.0, 1.0, false, ""),
                 pd("Ch B", 0x21, 0.0, 2.0, 1.0, false, ""),
@@ -867,6 +944,7 @@ fn catalog() -> Vec<NodeTemplate> {
             2,
             1,
             Gain,
+            0,
             vec![pd("Mix", 0x22, 0.0, 1.0, 0.5, false, "")],
         ),
         t(
@@ -877,6 +955,7 @@ fn catalog() -> Vec<NodeTemplate> {
             0,
             1,
             Oscillator,
+            0,
             vec![pd("Value", H_FREQ, 0.0, 10.0, 1.0, false, "")],
         ),
         t(
@@ -887,11 +966,12 @@ fn catalog() -> Vec<NodeTemplate> {
             1,
             1,
             Gain,
+            0,
             vec![pd("Offset", 0x23, -1.0, 1.0, 0.0, false, "")],
         ),
-        t("Inverter", "Utility", "🔃", C_UTL, 1, 1, Gain, vec![]),
-        t("Splitter", "Utility", "🔱", C_UTL, 1, 2, Gain, vec![]),
-        t("Speaker Output", "Output", "🎧", C_OUT, 1, 0, Output, vec![]),
+        t("Inverter", "Utility", "🔃", C_UTL, 1, 1, Gain, 0, vec![]),
+        t("Splitter", "Utility", "🔱", C_UTL, 1, 2, Gain, 0, vec![]),
+        t("Speaker Output", "Output", "🎧", C_OUT, 1, 0, Output, 0, vec![]),
     ]
 }
 
@@ -1122,6 +1202,18 @@ impl JodugaApp {
                             let _ = eng.set_param(n.id as u32, p.hash, n.param_values[i]);
                         }
                     }
+                    // Send mode/subtype initialization param
+                    let mode_hash: Option<u32> = match tmpl.engine_type {
+                        NodeType::Oscillator => Some(0xAD), // WAVEFORM_TYPE
+                        NodeType::Filter => Some(0xBD),     // FILTER_MODE
+                        NodeType::Gain => Some(0xCF),       // GAIN_MODE
+                        NodeType::Delay => Some(0xCD),      // DELAY_MODE
+                        NodeType::Effects => Some(0xCE),    // EFFECTS_MODE
+                        _ => None,
+                    };
+                    if let Some(hash) = mode_hash {
+                        let _ = eng.set_param(n.id as u32, hash, tmpl.subtype as f32);
+                    }
                 }
 
                 // Open cpal output stream
@@ -1134,7 +1226,7 @@ impl JodugaApp {
 
                 self.engine = Some(eng);
                 self.running = true;
-                self.status = "▶ Running".into();
+                self.status = "▶ Running (graph locked — only sliders active)".into();
             }
             Err(e) => self.status = format!("Init error: {e}"),
         }
@@ -1850,20 +1942,28 @@ impl eframe::App for JodugaApp {
         for action in actions {
             match action {
                 UiAction::AddNode(template_idx, world_pos) => {
-                    self.add_node(template_idx, world_pos);
+                    if !self.running {
+                        self.add_node(template_idx, world_pos);
+                    }
                 }
                 UiAction::RemoveNode(id) => {
-                    self.remove_node(id);
+                    if !self.running {
+                        self.remove_node(id);
+                    }
                 }
                 UiAction::BeginWire(node_id, port) => {
-                    self.pending_wire = Some((node_id, port));
+                    if !self.running {
+                        self.pending_wire = Some((node_id, port));
+                    }
                 }
                 UiAction::FinishWire { from_node, from_port, to_node, to_port } => {
-                    // Remove any existing wire to the same input
-                    self.wires.retain(|w| !(w.to_node == to_node && w.to_port == to_port));
-                    self.wires.push(Wire { from_node, from_port, to_node, to_port });
-                    self.pending_wire = None;
-                    wire_completed = true;
+                    if !self.running {
+                        // Remove any existing wire to the same input
+                        self.wires.retain(|w| !(w.to_node == to_node && w.to_port == to_port));
+                        self.wires.push(Wire { from_node, from_port, to_node, to_port });
+                        self.pending_wire = None;
+                        wire_completed = true;
+                    }
                 }
                 UiAction::ParamChanged(node_id, hash, value) => {
                     if let Some(ref eng) = self.engine {
