@@ -221,11 +221,7 @@ fn set_param(
 fn main() {
     tauri::Builder::default()
         .manage(EngineState(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![
-            start_engine,
-            stop_engine,
-            set_param
-        ])
+        .invoke_handler(tauri::generate_handler![start_engine, stop_engine, set_param])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
