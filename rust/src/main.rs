@@ -66,17 +66,25 @@ fn main() {
     .expect("engine init failed");
 
     engine.start().expect("engine start failed");
-    eprintln!("engine running  sr={}  bs={}", engine.sample_rate(), engine.block_size());
+    eprintln!(
+        "engine running  sr={}  bs={}",
+        engine.sample_rate(),
+        engine.block_size()
+    );
 
     thread::sleep(Duration::from_secs(1));
 
     // tweak oscillator frequency → 880 Hz
-    engine.set_param(0, 0x811C_9DC5, 880.0).expect("set_param osc freq");
+    engine
+        .set_param(0, 0x811C_9DC5, 880.0)
+        .expect("set_param osc freq");
     eprintln!("osc freq → 880 Hz");
     thread::sleep(Duration::from_secs(2));
 
     // tweak filter cutoff → 2000 Hz
-    engine.set_param(1, 0x811C_9DC5, 2000.0).expect("set_param filter freq");
+    engine
+        .set_param(1, 0x811C_9DC5, 2000.0)
+        .expect("set_param filter freq");
     eprintln!("filter cutoff → 2000 Hz");
     thread::sleep(Duration::from_secs(2));
 

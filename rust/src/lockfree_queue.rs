@@ -6,7 +6,6 @@
 /// - Zero allocations after init
 /// - Wait-free reader, lock-free writer
 /// - Cache-line padding avoids false sharing
-
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -61,10 +60,18 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
 
     // ── FFI pointers ────────────────────────────────────────────────
 
-    pub fn as_ptr(&self) -> *const T { self.buffer.as_ptr() }
-    pub fn head_ptr(&self) -> *const AtomicUsize { self.head.as_ref() }
-    pub fn tail_ptr(&self) -> *const AtomicUsize { self.tail.as_ref() }
-    pub fn capacity(&self) -> usize { self.buffer.len() }
+    pub fn as_ptr(&self) -> *const T {
+        self.buffer.as_ptr()
+    }
+    pub fn head_ptr(&self) -> *const AtomicUsize {
+        self.head.as_ref()
+    }
+    pub fn tail_ptr(&self) -> *const AtomicUsize {
+        self.tail.as_ref()
+    }
+    pub fn capacity(&self) -> usize {
+        self.buffer.len()
+    }
 
     // ── Producer (Rust thread) ──────────────────────────────────────
 
@@ -74,7 +81,9 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
         if next == self.tail.load(Ordering::Acquire) {
             return Err(item); // full
         }
-        unsafe { ptr::write((self.buffer.as_ptr() as *mut T).add(head), item); }
+        unsafe {
+            ptr::write((self.buffer.as_ptr() as *mut T).add(head), item);
+        }
         self.head.store(next, Ordering::Release);
         Ok(())
     }
@@ -84,19 +93,29 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
     pub fn dequeue(&self, out: &mut [T]) -> usize {
         let tail = self.tail.load(Ordering::Acquire);
         let head = self.head.load(Ordering::Acquire);
-        let avail = if head >= tail { head - tail } else { self.buffer.len() - tail + head };
+        let avail = if head >= tail {
+            head - tail
+        } else {
+            self.buffer.len() - tail + head
+        };
         let n = avail.min(out.len());
         for i in 0..n {
             out[i] = unsafe { ptr::read(self.buffer.as_ptr().add((tail + i) & self.mask)) };
         }
-        if n > 0 { self.tail.store((tail + n) & self.mask, Ordering::Release); }
+        if n > 0 {
+            self.tail.store((tail + n) & self.mask, Ordering::Release);
+        }
         n
     }
 
     pub fn len(&self) -> usize {
         let h = self.head.load(Ordering::Relaxed);
         let t = self.tail.load(Ordering::Relaxed);
-        if h >= t { h - t } else { self.buffer.len() - t + h }
+        if h >= t {
+            h - t
+        } else {
+            self.buffer.len() - t + h
+        }
     }
 
     pub fn is_empty(&self) -> bool {

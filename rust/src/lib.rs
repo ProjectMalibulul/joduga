@@ -5,7 +5,6 @@
 /// 3. Lock-free SPSC queues for parameter & MIDI updates  (`lockfree_queue`)
 /// 4. Safe wrapper with cpal audio output  (`audio_engine_wrapper`)
 /// 5. MIDI input handling  (`midi_input`)
-
 pub mod audio_engine_wrapper;
 pub mod ffi;
 pub mod lockfree_queue;
@@ -16,4 +15,3 @@ pub use audio_engine_wrapper::{AudioEngineWrapper, OutputRingBuffer};
 pub use ffi::{AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc, NodeType};
 pub use lockfree_queue::{LockFreeRingBuffer, MIDIEventCmd, ParamUpdateCmd, StatusRegister};
 pub use midi_input::MidiInputHandler;
-

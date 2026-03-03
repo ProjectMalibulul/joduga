@@ -4,9 +4,8 @@
 //! Automatic cleanup on drop — stops the engine and frees C++ resources.
 
 use crate::ffi::{
-    audio_engine_destroy, audio_engine_init, audio_engine_is_running,
-    audio_engine_start, audio_engine_stop,
-    AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc,
+    audio_engine_destroy, audio_engine_init, audio_engine_is_running, audio_engine_start,
+    audio_engine_stop, AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc,
 };
 use crate::lockfree_queue::{LockFreeRingBuffer, MIDIEventCmd, ParamUpdateCmd, StatusRegister};
 
@@ -113,7 +112,11 @@ impl AudioEngineWrapper {
             output_node_id,
         };
 
-        let config = AudioEngineConfig { sample_rate, block_size, cpu_core };
+        let config = AudioEngineConfig {
+            sample_rate,
+            block_size,
+            cpu_core,
+        };
 
         // 64K samples ~ 1.3 s at 48 kHz
         let output_ring = Arc::new(OutputRingBuffer::new(65536));
@@ -124,14 +127,14 @@ impl AudioEngineWrapper {
             audio_engine_init(
                 &graph,
                 &config,
-                param_queue.as_ptr()  as *const std::ffi::c_void,
+                param_queue.as_ptr() as *const std::ffi::c_void,
                 param_queue.capacity() as u32,
                 param_queue.head_ptr() as *const std::ffi::c_void,
                 param_queue.tail_ptr() as *const std::ffi::c_void,
-                midi_queue.as_ptr()    as *const std::ffi::c_void,
-                midi_queue.capacity()  as u32,
-                midi_queue.head_ptr()  as *const std::ffi::c_void,
-                midi_queue.tail_ptr()  as *const std::ffi::c_void,
+                midi_queue.as_ptr() as *const std::ffi::c_void,
+                midi_queue.capacity() as u32,
+                midi_queue.head_ptr() as *const std::ffi::c_void,
+                midi_queue.tail_ptr() as *const std::ffi::c_void,
                 &mut *status_register,
                 output_ring.as_ptr() as *mut f32,
                 output_ring.capacity() as u32,
@@ -179,7 +182,12 @@ impl AudioEngineWrapper {
     /// Enqueue a parameter change for the audio thread.
     pub fn set_param(&self, node_id: u32, param_hash: u32, value: f32) -> Result<(), String> {
         self.param_queue
-            .enqueue(ParamUpdateCmd { node_id, param_hash, value, padding: 0 })
+            .enqueue(ParamUpdateCmd {
+                node_id,
+                param_hash,
+                value,
+                padding: 0,
+            })
             .map_err(|_| "param queue full".into())
     }
 
@@ -192,7 +200,12 @@ impl AudioEngineWrapper {
         timestamp_samples: u32,
     ) -> Result<(), String> {
         self.midi_queue
-            .enqueue(MIDIEventCmd { event_type, pitch, velocity, timestamp_samples })
+            .enqueue(MIDIEventCmd {
+                event_type,
+                pitch,
+                velocity,
+                timestamp_samples,
+            })
             .map_err(|_| "MIDI queue full".into())
     }
 
@@ -200,8 +213,12 @@ impl AudioEngineWrapper {
         unsafe { audio_engine_is_running(self.engine) != 0 }
     }
 
-    pub fn sample_rate(&self) -> u32 { self.sample_rate }
-    pub fn block_size(&self) -> u32 { self.block_size }
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    pub fn block_size(&self) -> u32 {
+        self.block_size
+    }
 
     /// Clone the `Arc` to the output ring for the cpal callback.
     pub fn output_ring(&self) -> Arc<OutputRingBuffer> {

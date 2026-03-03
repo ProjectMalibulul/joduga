@@ -3,7 +3,6 @@
 /// Used to validate the user-created graph (acyclicity, port bounds),
 /// topologically sort it (Kahn's algorithm), and compile it into the C FFI
 /// structures expected by the C++ engine.
-
 use crate::ffi::{NodeConnection, NodeDesc, NodeType};
 use std::collections::{HashMap, VecDeque};
 
@@ -33,7 +32,11 @@ pub struct ShadowGraph {
 
 impl ShadowGraph {
     pub fn new(output_node_id: u32) -> Self {
-        Self { nodes: HashMap::new(), edges: Vec::new(), output_node_id }
+        Self {
+            nodes: HashMap::new(),
+            edges: Vec::new(),
+            output_node_id,
+        }
     }
 
     pub fn add_node(&mut self, node: Node) -> Result<(), String> {
@@ -45,7 +48,9 @@ impl ShadowGraph {
     }
 
     pub fn add_edge(&mut self, edge: Edge) -> Result<(), String> {
-        let from = self.nodes.get(&edge.from_node_id)
+        let from = self
+            .nodes
+            .get(&edge.from_node_id)
             .ok_or_else(|| format!("Source node {} does not exist", edge.from_node_id))?;
         if edge.from_output_idx >= from.num_outputs {
             return Err(format!(
@@ -54,7 +59,9 @@ impl ShadowGraph {
             ));
         }
 
-        let to = self.nodes.get(&edge.to_node_id)
+        let to = self
+            .nodes
+            .get(&edge.to_node_id)
             .ok_or_else(|| format!("Target node {} does not exist", edge.to_node_id))?;
         if edge.to_input_idx >= to.num_inputs {
             return Err(format!(
@@ -114,7 +121,8 @@ impl ShadowGraph {
             *in_degree.entry(e.to_node_id).or_default() += 1;
         }
 
-        let mut queue: VecDeque<u32> = in_degree.iter()
+        let mut queue: VecDeque<u32> = in_degree
+            .iter()
             .filter(|(_, &d)| d == 0)
             .map(|(&id, _)| id)
             .collect();
@@ -126,7 +134,9 @@ impl ShadowGraph {
                 if e.from_node_id == id {
                     let d = in_degree.get_mut(&e.to_node_id).unwrap();
                     *d -= 1;
-                    if *d == 0 { queue.push_back(e.to_node_id); }
+                    if *d == 0 {
+                        queue.push_back(e.to_node_id);
+                    }
                 }
             }
         }
@@ -141,17 +151,29 @@ impl ShadowGraph {
     pub fn compile(&self) -> Result<(Vec<NodeDesc>, Vec<NodeConnection>, Vec<u32>), String> {
         let exec_order = self.topological_sort()?;
 
-        let node_descs: Vec<NodeDesc> = exec_order.iter().map(|&id| {
-            let n = &self.nodes[&id];
-            NodeDesc { node_id: id, node_type: n.node_type, num_inputs: n.num_inputs, num_outputs: n.num_outputs }
-        }).collect();
+        let node_descs: Vec<NodeDesc> = exec_order
+            .iter()
+            .map(|&id| {
+                let n = &self.nodes[&id];
+                NodeDesc {
+                    node_id: id,
+                    node_type: n.node_type,
+                    num_inputs: n.num_inputs,
+                    num_outputs: n.num_outputs,
+                }
+            })
+            .collect();
 
-        let connections: Vec<NodeConnection> = self.edges.iter().map(|e| NodeConnection {
-            from_node_id: e.from_node_id,
-            from_output_idx: e.from_output_idx,
-            to_node_id: e.to_node_id,
-            to_input_idx: e.to_input_idx,
-        }).collect();
+        let connections: Vec<NodeConnection> = self
+            .edges
+            .iter()
+            .map(|e| NodeConnection {
+                from_node_id: e.from_node_id,
+                from_output_idx: e.from_output_idx,
+                to_node_id: e.to_node_id,
+                to_input_idx: e.to_input_idx,
+            })
+            .collect();
 
         Ok((node_descs, connections, exec_order))
     }
@@ -162,17 +184,36 @@ mod tests {
     use super::*;
 
     fn make_node(id: u32, t: NodeType, ni: u32, no: u32) -> Node {
-        Node { id, node_type: t, num_inputs: ni, num_outputs: no, parameters: HashMap::new() }
+        Node {
+            id,
+            node_type: t,
+            num_inputs: ni,
+            num_outputs: no,
+            parameters: HashMap::new(),
+        }
     }
 
     #[test]
     fn linear_chain() {
         let mut g = ShadowGraph::new(2);
-        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1))
+            .unwrap();
         g.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
         g.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
-        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 }).unwrap();
-        g.add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 }).unwrap();
+        g.add_edge(Edge {
+            from_node_id: 0,
+            from_output_idx: 0,
+            to_node_id: 1,
+            to_input_idx: 0,
+        })
+        .unwrap();
+        g.add_edge(Edge {
+            from_node_id: 1,
+            from_output_idx: 0,
+            to_node_id: 2,
+            to_input_idx: 0,
+        })
+        .unwrap();
         let order = g.topological_sort().unwrap();
         assert_eq!(order, vec![0, 1, 2]);
     }
@@ -182,8 +223,20 @@ mod tests {
         let mut g = ShadowGraph::new(0);
         g.add_node(make_node(0, NodeType::Filter, 1, 1)).unwrap();
         g.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
-        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 }).unwrap();
-        g.add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 0, to_input_idx: 0 }).unwrap();
+        g.add_edge(Edge {
+            from_node_id: 0,
+            from_output_idx: 0,
+            to_node_id: 1,
+            to_input_idx: 0,
+        })
+        .unwrap();
+        g.add_edge(Edge {
+            from_node_id: 1,
+            from_output_idx: 0,
+            to_node_id: 0,
+            to_input_idx: 0,
+        })
+        .unwrap();
         assert!(g.validate().is_err());
     }
 
@@ -191,11 +244,24 @@ mod tests {
     fn non_contiguous_ids() {
         // IDs 10, 20, 30 — would crash the old vec-indexed cycle detection
         let mut g = ShadowGraph::new(30);
-        g.add_node(make_node(10, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(10, NodeType::Oscillator, 0, 1))
+            .unwrap();
         g.add_node(make_node(20, NodeType::Filter, 1, 1)).unwrap();
         g.add_node(make_node(30, NodeType::Output, 1, 0)).unwrap();
-        g.add_edge(Edge { from_node_id: 10, from_output_idx: 0, to_node_id: 20, to_input_idx: 0 }).unwrap();
-        g.add_edge(Edge { from_node_id: 20, from_output_idx: 0, to_node_id: 30, to_input_idx: 0 }).unwrap();
+        g.add_edge(Edge {
+            from_node_id: 10,
+            from_output_idx: 0,
+            to_node_id: 20,
+            to_input_idx: 0,
+        })
+        .unwrap();
+        g.add_edge(Edge {
+            from_node_id: 20,
+            from_output_idx: 0,
+            to_node_id: 30,
+            to_input_idx: 0,
+        })
+        .unwrap();
         assert!(g.validate().is_ok());
         let (_, _, order) = g.compile().unwrap();
         assert_eq!(order, vec![10, 20, 30]);
