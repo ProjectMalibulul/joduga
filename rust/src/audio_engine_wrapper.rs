@@ -10,7 +10,7 @@ use crate::ffi::{
 };
 use crate::lockfree_queue::{LockFreeRingBuffer, MIDIEventCmd, ParamUpdateCmd, StatusRegister};
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// High-level wrapper for the C++ audio engine.
@@ -87,8 +87,8 @@ impl AudioEngineWrapper {
         let param_queue = LockFreeRingBuffer::<ParamUpdateCmd>::new(8192);
         let midi_queue = LockFreeRingBuffer::<MIDIEventCmd>::new(4096);
         let mut status_register = Box::new(StatusRegister {
-            graph_version: 0,
-            adopted_version: 0,
+            graph_version: AtomicU32::new(0),
+            adopted_version: AtomicU32::new(0),
             reserved: [0, 0],
         });
 
@@ -120,6 +120,8 @@ impl AudioEngineWrapper {
 
         // SAFETY: all pointers point into heap allocations that outlive this
         // call. C++ copies graph data and stores ring-buffer pointers.
+        // Tail pointers are passed as *mut because C++ (the consumer) writes
+        // to them to advance the read position.
         let engine = unsafe {
             audio_engine_init(
                 &graph,
@@ -127,11 +129,11 @@ impl AudioEngineWrapper {
                 param_queue.as_ptr()  as *const std::ffi::c_void,
                 param_queue.capacity() as u32,
                 param_queue.head_ptr() as *const std::ffi::c_void,
-                param_queue.tail_ptr() as *const std::ffi::c_void,
+                param_queue.tail_ptr() as *mut std::ffi::c_void,
                 midi_queue.as_ptr()    as *const std::ffi::c_void,
                 midi_queue.capacity()  as u32,
                 midi_queue.head_ptr()  as *const std::ffi::c_void,
-                midi_queue.tail_ptr()  as *const std::ffi::c_void,
+                midi_queue.tail_ptr()  as *mut std::ffi::c_void,
                 &mut *status_register,
                 output_ring.as_ptr() as *mut f32,
                 output_ring.capacity() as u32,

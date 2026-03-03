@@ -100,16 +100,17 @@ cpp/
 │   ├── audio_node.h         Base DSP node class (virtual process())
 │   ├── nodes/
 │   │   ├── oscillator.h     Sine wave generator
-│   │   ├── filter.h         2nd-order Butterworth low-pass filter
+│   │   ├── filter.h         Biquad filter (LP/HP/BP/notch/comb, per-block coefficients)
 │   │   └── gain.h           Linear amplitude scaler
 │   └── platform/
-│       └── rt_platform.h    Real-time thread utilities (SCHED_FIFO)
+│       └── rt_platform.h    Real-time thread utilities
 │
 └── src/
     ├── audio_engine.cpp     Core engine & audio loop (350 lines)
     ├── nodes/*.cpp          Node implementation stubs
     └── platform/
         ├── linux_rt.cpp     Linux SCHED_FIFO implementation
+        ├── macos_rt.cpp     macOS Mach time-constraint implementation
         └── windows_rt.cpp   Windows RT priority implementation
 ```
 
@@ -201,26 +202,30 @@ If all else fails, the code is heavily documented. Start at `rust/src/main.rs` a
 
 ## 🏆 Project Milestones
 
-### ✅ Completed (MVP)
-- [x] Lock-free queue infrastructure
-- [x] FFI boundary (Rust ↔ C++)
-- [x] Real-time audio thread (SCHED_FIFO)
+### ✅ Completed (MVP + Audit)
+- [x] Lock-free queue infrastructure (corrected memory ordering)
+- [x] FFI boundary (Rust ↔ C++, mutable tail pointers)
+- [x] Real-time audio thread (SCHED_FIFO / Mach / THREAD_PRIORITY)
 - [x] Graph validation & topological sort
-- [x] DSP nodes: Oscillator, Filter, Gain
+- [x] Node/edge deletion support
+- [x] DSP nodes: Oscillator, Filter (per-block coefficients), Gain
 - [x] MIDI input handling
 - [x] Hot-swappable parameter updates
-- [x] Comprehensive documentation (3,000+ lines)
+- [x] Comprehensive documentation (3,500+ lines)
+- [x] Cross-platform CI/CD (GitHub Actions)
+- [x] macOS platform support (Mach time-constraint scheduling)
+- [x] Static library linking
+- [x] Lock-free queue benchmark
+- [x] Clippy + rustfmt enforcement
 
-### 🚧 In Progress (Phase 2)
-- [ ] Audio device I/O (`cpal` integration)
+### 🚧 In Progress
 - [ ] ADSR envelope implementation
 - [ ] MIDI event routing to envelopes
 
 ### 📅 Planned (Phase 3+)
-- [ ] Tauri + React frontend
-- [ ] ReactFlow node graph editor
 - [ ] Reverb, delay, chorus effects
 - [ ] Preset save/load system
+- [ ] Wavetable oscillator
 
 ---
 
@@ -234,6 +239,6 @@ If all else fails, the code is heavily documented. Start at `rust/src/main.rs` a
 
 ---
 
-**Last Updated:** March 1, 2026  
-**Project Status:** MVP Complete  
-**Next Milestone:** Audio Device I/O (Phase 2)
+**Last Updated:** July 2025  
+**Project Status:** Post-Audit  
+**Next Milestone:** ADSR Envelope (Phase 2)

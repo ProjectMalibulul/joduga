@@ -13,15 +13,21 @@ fn main() {
         .define("CMAKE_BUILD_TYPE", "Release")
         .build();
 
-    // Tell cargo to link the library
+    // Tell cargo to link the static library
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
-    println!("cargo:rustc-link-lib=dylib=joduga_audio");
+    println!("cargo:rustc-link-lib=static=joduga_audio");
 
-    // Link system libraries
+    // Static C++ library needs the C++ standard library at link time
     #[cfg(target_os = "linux")]
     {
+        println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-lib=pthread");
         println!("cargo:rustc-link-lib=rt");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        println!("cargo:rustc-link-lib=c++");
     }
 
     #[cfg(target_os = "windows")]

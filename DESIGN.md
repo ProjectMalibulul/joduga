@@ -26,11 +26,11 @@ Thread 2: Rust MIDI Listener Thread
   └─> Listens for MIDI events via midir
   └─> Pushes MIDI events to lock-free queue
 
-Thread 3: C++ Audio Thread (SCHED_FIFO, pinned to Core 0)
+Thread 3: C++ Audio Thread (SCHED_FIFO / Mach time-constraint / THREAD_PRIORITY_TIME_CRITICAL)
   └─> Drains parameter update queue (non-blocking)
   └─> Drains MIDI event queue (non-blocking)
   └─> Processes DSP graph (256 samples per block)
-  └─> Writes to audio device (TODO: cpal integration)
+  └─> Writes output to ring buffer (consumed by cpal)
 ```
 
 ### 2.2 Synchronization Primitives
@@ -86,22 +86,25 @@ struct LockFreeRingBuffer<T> {
 
 - **Enqueue (Rust side):**
   ```rust
-  head.load(Ordering::Acquire)  // See current write position
-  buffer[head] = item           // Write data
+  head.load(Ordering::Relaxed)   // Own index — no fence needed
+  tail.load(Ordering::Acquire)   // Remote index — acquire visibility
+  buffer[head] = item            // Write data
   head.store(next, Ordering::Release)  // Publish new head
   ```
 
 - **Dequeue (C++ side):**
   ```cpp
-  tail.load(memory_order_acquire)  // See current read position
+  tail.load(memory_order_relaxed)  // Own index — no fence needed
+  head.load(memory_order_acquire)  // Remote index — acquire visibility
   item = buffer[tail]              // Read data
   tail.store(next, memory_order_release)  // Publish new tail
   ```
 
 **Why this works:**
-- Rust writes to `head`, C++ reads from `tail`
-- No shared write location → no contention
-- `Acquire`/`Release` ensures visibility of data writes
+- Producer loads its own index (`head`) with `Relaxed` — only it writes to `head`
+- Producer loads the remote index (`tail`) with `Acquire` to see the latest consumer position
+- `Release` store on `head` makes written data visible to the consumer
+- Same symmetric pattern on the consumer side
 
 ---
 
@@ -244,8 +247,8 @@ class FilterNode : public AudioNode {
 ```
 
 **Parameter Smoothing:**
-- Cutoff frequency is interpolated over the block to avoid clicks
-- Coefficients are recalculated per-sample (inefficient, can be optimized)
+- Cutoff frequency is interpolated over the block to prevent clicks
+- Coefficients are recalculated **once per block** (not per-sample) — saves sin/cos/pow each frame
 
 ---
 
@@ -328,28 +331,24 @@ class FilterNode : public AudioNode {
 
 - **Queue overflow handling:** If param queue fills, new updates are dropped (doesn't crash)
 - **Graph size limits:** Rust validates max 256 nodes, 1024 edges
+- **Node/edge deletion:** `remove_node()` deletes a node and all connected edges atomically
 
 ---
 
 ## 11. Future Enhancements
 
-### 11.1 Phase 2: Audio Device I/O
-- Integrate `cpal` for cross-platform audio
-- Replace mock output node with actual DAC writes
+### 11.1 Phase 2: Advanced DSP
+- Implement reverb (Freeverb algorithm)
+- Delay (circular buffer)
+- Distortion, chorus, flanger
 
 ### 11.2 Phase 3: ADSR Envelope
 - Implement attack/decay/sustain/release
 - Wire MIDI Note On/Off events to envelope gates
 
-### 11.3 Phase 4: Frontend (Tauri + React)
-- ReactFlow node graph editor
-- WebGL-accelerated oscilloscope visualization
-- MIDI keyboard display
-
-### 11.4 Phase 5: Advanced DSP
-- Reverb (Freeverb algorithm)
-- Delay (circular buffer)
-- Distortion, chorus, flanger
+### 11.3 Phase 4: Wavetable Oscillator
+- Replace sin() with wavetable lookup
+- SIMD vectorization (process 8 samples at once)
 
 ---
 
@@ -362,6 +361,6 @@ class FilterNode : public AudioNode {
 
 ---
 
-**Document Version:** 1.0  
-**Last Updated:** March 1, 2026  
+**Document Version:** 2.0  
+**Last Updated:** July 2025  
 **Author:** Joduga Development Team

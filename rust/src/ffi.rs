@@ -1,6 +1,12 @@
 /// FFI bindings to the C++ audio engine.
 ///
 /// All structures are `#[repr(C)]` so layout matches the C++ side exactly.
+///
+/// # Safety contracts
+/// - All pointers passed to C++ must remain valid for the engine lifetime.
+/// - Queue pointers (head/tail) are `AtomicUsize` and must not be freed
+///   while the engine is running.
+/// - The caller must call `audio_engine_stop` before `audio_engine_destroy`.
 use std::ffi::c_void;
 
 pub use crate::lockfree_queue::{MIDIEventCmd, ParamUpdateCmd, StatusRegister};
@@ -70,11 +76,11 @@ extern "C" {
         param_queue_buffer:   *const c_void,
         param_queue_capacity: u32,
         param_queue_head:     *const c_void,
-        param_queue_tail:     *const c_void,
+        param_queue_tail:     *mut c_void,   // consumer (C++) writes tail
         midi_queue_buffer:    *const c_void,
         midi_queue_capacity:  u32,
         midi_queue_head:      *const c_void,
-        midi_queue_tail:      *const c_void,
+        midi_queue_tail:      *mut c_void,   // consumer (C++) writes tail
         status_register:      *mut StatusRegister,
         output_ring_buffer:   *mut f32,
         output_ring_capacity: u32,

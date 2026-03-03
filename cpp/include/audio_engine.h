@@ -74,7 +74,10 @@ extern "C"
         uint32_t padding;
     } ParamUpdateCmd;
 
-    /// Status register shared between Rust and C++
+    /// Status register shared between Rust and C++.
+    /// These fields are accessed atomically from multiple threads.
+    /// On the Rust side they are AtomicU32; on the C++ side, we use
+    /// __atomic builtins to ensure correct visibility.
     typedef struct
     {
         uint32_t graph_version;
@@ -108,11 +111,11 @@ extern "C"
         const void *param_queue_buffer,
         uint32_t param_queue_capacity,
         const void *param_queue_head,
-        const void *param_queue_tail,
+        void *param_queue_tail,
         const void *midi_queue_buffer,
         uint32_t midi_queue_capacity,
         const void *midi_queue_head,
-        const void *midi_queue_tail,
+        void *midi_queue_tail,
         StatusRegister *status_register,
         float *output_ring_buffer,
         uint32_t output_ring_capacity,

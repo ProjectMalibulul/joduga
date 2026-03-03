@@ -138,13 +138,14 @@ public:
         }
 
         // Biquad processing for all standard modes
+        // Smooth parameters once per block (not per-sample) to avoid
+        // expensive trig recomputation on every sample.
+        cutoff = cutoff * 0.95f + target_cutoff * 0.05f;
+        resonance = resonance * 0.95f + target_resonance * 0.05f;
+        compute_coefficients();
+
         for (uint32_t i = 0; i < num_samples; ++i)
         {
-            // Smooth parameters
-            cutoff = cutoff * 0.95f + target_cutoff * 0.05f;
-            resonance = resonance * 0.95f + target_resonance * 0.05f;
-            compute_coefficients();
-
             // Direct Form II Transposed biquad
             float x = in[i];
             float y = b0 * x + z1;

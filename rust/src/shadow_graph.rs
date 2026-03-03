@@ -7,6 +7,11 @@
 use crate::ffi::{NodeConnection, NodeDesc, NodeType};
 use std::collections::{HashMap, VecDeque};
 
+/// Maximum number of nodes allowed in a single graph.
+pub const MAX_NODES: usize = 256;
+/// Maximum number of edges allowed in a single graph.
+pub const MAX_EDGES: usize = 1024;
+
 #[derive(Debug, Clone)]
 pub struct Node {
     pub id: u32,
@@ -40,11 +45,26 @@ impl ShadowGraph {
         if self.nodes.contains_key(&node.id) {
             return Err(format!("Node {} already exists", node.id));
         }
+        if self.nodes.len() >= MAX_NODES {
+            return Err(format!("Maximum node count ({MAX_NODES}) reached"));
+        }
         self.nodes.insert(node.id, node);
         Ok(())
     }
 
+    /// Remove a node and all edges connected to it.
+    pub fn remove_node(&mut self, node_id: u32) -> Result<(), String> {
+        if self.nodes.remove(&node_id).is_none() {
+            return Err(format!("Node {} does not exist", node_id));
+        }
+        self.edges.retain(|e| e.from_node_id != node_id && e.to_node_id != node_id);
+        Ok(())
+    }
+
     pub fn add_edge(&mut self, edge: Edge) -> Result<(), String> {
+        if self.edges.len() >= MAX_EDGES {
+            return Err(format!("Maximum edge count ({MAX_EDGES}) reached"));
+        }
         let from = self.nodes.get(&edge.from_node_id)
             .ok_or_else(|| format!("Source node {} does not exist", edge.from_node_id))?;
         if edge.from_output_idx >= from.num_outputs {
@@ -64,6 +84,16 @@ impl ShadowGraph {
         }
 
         self.edges.push(edge);
+        Ok(())
+    }
+
+    /// Remove an edge between two nodes.
+    pub fn remove_edge(&mut self, from_node_id: u32, to_node_id: u32) -> Result<(), String> {
+        let before = self.edges.len();
+        self.edges.retain(|e| !(e.from_node_id == from_node_id && e.to_node_id == to_node_id));
+        if self.edges.len() == before {
+            return Err(format!("No edge from {} to {}", from_node_id, to_node_id));
+        }
         Ok(())
     }
 
@@ -199,5 +229,37 @@ mod tests {
         assert!(g.validate().is_ok());
         let (_, _, order) = g.compile().unwrap();
         assert_eq!(order, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn remove_node_and_edges() {
+        let mut g = ShadowGraph::new(2);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
+        g.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 }).unwrap();
+        g.add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 }).unwrap();
+        // Remove middle node — should remove connected edges
+        g.remove_node(1).unwrap();
+        assert_eq!(g.nodes.len(), 2);
+        assert!(g.edges.is_empty());
+    }
+
+    #[test]
+    fn remove_edge() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 }).unwrap();
+        assert_eq!(g.edges.len(), 1);
+        g.remove_edge(0, 1).unwrap();
+        assert!(g.edges.is_empty());
+    }
+
+    #[test]
+    fn duplicate_node_rejected() {
+        let mut g = ShadowGraph::new(0);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        assert!(g.add_node(make_node(0, NodeType::Filter, 1, 1)).is_err());
     }
 }

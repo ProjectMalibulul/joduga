@@ -66,11 +66,11 @@ struct AudioEngineImpl
     std::atomic<size_t> *output_ring_head = nullptr;
     const std::atomic<size_t> *output_ring_tail = nullptr;
 
-    // Working buffer
+    // Working buffer — sized to match the param queue so we never truncate
     std::vector<ParamUpdateCmd> pending_params;
 };
 
-static AudioEngineImpl *g_audio_engine = nullptr;
+// Note: removed global singleton; each engine is now independent.
 
 // ── Node factory ───────────────────────────────────────────────────────
 static std::unique_ptr<AudioNode> create_node(NodeType type, uint32_t node_id)
@@ -101,7 +101,9 @@ static void audio_thread_main(AudioEngineImpl *e)
 {
     rt_platform::set_thread_rt_priority(e->cpu_core);
 
-    e->pending_params.resize(256);
+    // Size the working buffer to match the queue capacity so we never
+    // silently drop parameter updates.
+    e->pending_params.resize(e->param_queue_capacity);
 
     // Pre-compute block duration for sleep-based pacing
     const uint64_t block_ns =
@@ -175,7 +177,8 @@ static void audio_thread_main(AudioEngineImpl *e)
         }
 
         if (e->status_register)
-            e->status_register->graph_version++;
+            __atomic_fetch_add(&e->status_register->graph_version, 1u,
+                               __ATOMIC_RELEASE);
 
         // Pace the thread so it doesn't spin at 100 % CPU
         rt_platform::sleep_precise_ns(block_ns);
@@ -192,20 +195,20 @@ extern "C"
         const void *param_queue_buffer,
         uint32_t param_queue_capacity,
         const void *param_queue_head,
-        const void *param_queue_tail,
+        void *param_queue_tail,
         const void *midi_queue_buffer,
         uint32_t midi_queue_capacity,
         const void *midi_queue_head,
-        const void *midi_queue_tail,
+        void *midi_queue_tail,
         StatusRegister *status_register,
         float *output_ring_buffer,
         uint32_t output_ring_capacity,
         void *output_ring_head,
         const void *output_ring_tail)
     {
-        if (g_audio_engine)
+        if (!graph || !config)
         {
-            std::cerr << "[joduga] Engine already initialised\n";
+            std::cerr << "[joduga] null graph or config\n";
             return nullptr;
         }
 
@@ -258,14 +261,12 @@ extern "C"
         e->param_queue_buffer = param_queue_buffer;
         e->param_queue_capacity = param_queue_capacity;
         e->param_queue_head = static_cast<const std::atomic<size_t> *>(param_queue_head);
-        e->param_queue_tail = const_cast<std::atomic<size_t> *>(
-            static_cast<const std::atomic<size_t> *>(param_queue_tail));
+        e->param_queue_tail = static_cast<std::atomic<size_t> *>(param_queue_tail);
 
         e->midi_queue_buffer = midi_queue_buffer;
         e->midi_queue_capacity = midi_queue_capacity;
         e->midi_queue_head = static_cast<const std::atomic<size_t> *>(midi_queue_head);
-        e->midi_queue_tail = const_cast<std::atomic<size_t> *>(
-            static_cast<const std::atomic<size_t> *>(midi_queue_tail));
+        e->midi_queue_tail = static_cast<std::atomic<size_t> *>(midi_queue_tail);
 
         e->status_register = status_register;
 
@@ -278,8 +279,8 @@ extern "C"
                                   ? static_cast<const std::atomic<size_t> *>(output_ring_tail)
                                   : nullptr;
 
-        g_audio_engine = e.release();
-        return reinterpret_cast<AudioEngine *>(g_audio_engine);
+        auto *raw = e.release();
+        return reinterpret_cast<AudioEngine *>(raw);
     }
 
     int audio_engine_start(AudioEngine *engine_opaque)
@@ -311,7 +312,6 @@ extern "C"
         if (e->is_running.load(std::memory_order_acquire))
             audio_engine_stop(engine_opaque);
         delete e;
-        g_audio_engine = nullptr;
     }
 
     uint64_t audio_engine_get_sample_count(const AudioEngine *engine_opaque)

@@ -610,8 +610,8 @@ impl eframe::App for JodugaApp {
         let toolbar_resp = egui::TopBottomPanel::top("toolbar")
             .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(8)))
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("toolbar_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("toolbar_layer"))),
                     |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(egui::RichText::new("🎵 Joduga").strong().color(ACCENT));
@@ -651,8 +651,8 @@ impl eframe::App for JodugaApp {
             .exact_height(100.0)
             .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(4)))
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("waveform_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("waveform_layer"))),
                     |ui| {
                 let wf_data = self.waveform.lock().unwrap().clone();
                 let points: PlotPoints = wf_data
@@ -681,8 +681,8 @@ impl eframe::App for JodugaApp {
             .default_width(190.0)
             .frame(egui::Frame::new().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("catalog_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("catalog_layer"))),
                     |ui| {
                 ui.heading(egui::RichText::new("Node Catalog").color(ACCENT));
                 ui.separator();
@@ -752,8 +752,8 @@ impl eframe::App for JodugaApp {
                 .default_width(210.0)
                 .frame(egui::Frame::new().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
                 .show(ctx, |ui| {
-                    ui.with_layer_id(
-                        egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("settings_layer")),
+                    ui.scope_builder(
+                        egui::UiBuilder::new().layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("settings_layer"))),
                         |ui| {
                     ui.heading(egui::RichText::new("⚙ Settings").color(ACCENT));
                     ui.separator();
