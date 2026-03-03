@@ -178,7 +178,7 @@ case NODE_TYPE_DELAY:
 **File:** `CMakeLists.txt`
 
 ```cmake
-add_library(joduga_audio SHARED
+add_library(joduga_audio STATIC
   # ...existing files...
   cpp/src/nodes/delay.cpp  # ← Add this
 )

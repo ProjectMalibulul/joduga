@@ -17,7 +17,7 @@
 | Audio Engine Wrapper | ✅ Complete | 180 | Safe Rust wrapper for C++ |
 | MIDI Input | ✅ Complete | 120 | Event handling via midir |
 | Audio Engine Core | ✅ Complete | 350 | Real-time audio thread (C++) |
-| Platform Abstraction | ✅ Complete | 120 | Linux/Windows RT scheduling |
+| Platform Abstraction | ✅ Complete | 180 | Linux/macOS/Windows RT scheduling |
 | DSP Nodes | ✅ Complete | 200 | Oscillator, Filter, Gain |
 
 **Total Code:** ~2,500 lines (excluding comments)
@@ -87,7 +87,7 @@
 - [x] MIDI input support (Note On/Off, CC, Pitch Bend)
 - [x] Zero-allocation audio callback
 - [x] CPU core affinity
-- [x] Cross-platform (Linux + Windows)
+- [x] Cross-platform (Linux + macOS + Windows)
 
 ### DSP Nodes ✅
 - [x] Oscillator (sine wave with frequency modulation)

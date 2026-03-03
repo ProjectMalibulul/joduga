@@ -140,9 +140,17 @@ namespace ParamHash
     constexpr uint32_t PARAMETRIC_Q = 0xB7u;
 
     // ── Dynamics extra params ───────────────────────────────────────
+    constexpr uint32_t THRESHOLD = 0xC0u;
     constexpr uint32_t RATIO = 0xC1u;
     constexpr uint32_t ATTACK = 0xC2u;
     constexpr uint32_t RELEASE = 0xC3u;
+    constexpr uint32_t DYN_KNEE = 0xC4u;
+    constexpr uint32_t DYN_MAKEUP = 0xC5u;
+
+    // ── Sub-type selectors (Gain/Delay/Effects) ─────────────────────
+    constexpr uint32_t GAIN_MODE = 0xCFu;
+    constexpr uint32_t DELAY_MODE = 0xCDu;
+    constexpr uint32_t EFFECTS_MODE = 0xCEu;
 
     // ── Effects extra params ────────────────────────────────────────
     constexpr uint32_t DELAY_TIME = 0xD1u;

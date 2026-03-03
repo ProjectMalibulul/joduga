@@ -5,26 +5,44 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_VISIBILITY_PRESET default)
 
-# Detect OS and set platform-specific flags
+# ── Platform-specific flags ──────────────────────────────────────────
 if(UNIX AND NOT APPLE)
-  # Linux: optimization, SIMD, fast math (use -march=x86-64-v2 for broad compat)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=x86-64-v2 -ffast-math -ftree-vectorize")
+  # Linux: SIMD-safe baseline, fast math, vectorisation
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=x86-64-v2 -ffast-math -ftree-vectorize")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math -ftree-vectorize")
+  endif()
   set(RT_LIB pthread rt)
   set(PLATFORM_SOURCES cpp/src/platform/linux_rt.cpp)
+elseif(APPLE)
+  # macOS: support both x86_64 and arm64 (Apple Silicon)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math -ftree-vectorize")
+  set(RT_LIB pthread)
+  set(PLATFORM_SOURCES cpp/src/platform/macos_rt.cpp)
 elseif(WIN32)
-  # Windows: AVX2, fast math, visibility
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:AVX2 /fp:fast")
+  if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
+    # Only enable AVX2 on x86/x64 targets
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|x86")
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:AVX2")
+    endif()
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math -ftree-vectorize")
+  endif()
   set(RT_LIB)
   set(PLATFORM_SOURCES cpp/src/platform/windows_rt.cpp)
 endif()
 
-# Core audio engine library (static archive linked into Rust binary)
+# ── Core audio engine library (static archive linked into Rust binary) ──
 add_library(joduga_audio STATIC
   cpp/src/audio_engine.cpp
   cpp/src/audio_node.cpp
   cpp/src/nodes/oscillator.cpp
   cpp/src/nodes/filter.cpp
   cpp/src/nodes/gain.cpp
+  cpp/src/nodes/delay.cpp
+  cpp/src/nodes/effects.cpp
   ${PLATFORM_SOURCES}
 )
 

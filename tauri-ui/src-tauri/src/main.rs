@@ -65,6 +65,8 @@ fn parse_engine_type(s: &str) -> NodeType {
         "Filter" => NodeType::Filter,
         "Gain" => NodeType::Gain,
         "Output" => NodeType::Output,
+        "Delay" => NodeType::Delay,
+        "Effects" => NodeType::Effects,
         _ => NodeType::Gain,
     }
 }
@@ -72,9 +74,7 @@ fn parse_engine_type(s: &str) -> NodeType {
 /// Open a cpal output stream that reads from the engine ring buffer.
 fn open_cpal_stream(ring: Arc<OutputRingBuffer>, sample_rate: u32) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or("No audio output device found")?;
+    let device = host.default_output_device().ok_or("No audio output device found")?;
     let config = cpal::StreamConfig {
         channels: 1,
         sample_rate: cpal::SampleRate(sample_rate),
@@ -166,6 +166,18 @@ fn start_engine(
         for p in &n.params {
             let _ = engine.set_param(n.id, p.hash, p.value);
         }
+        // Send mode-select param so the C++ node initialises to the right subtype
+        let mode_hash: Option<u32> = match n.engine_type.as_str() {
+            "Oscillator" => Some(0xAD),
+            "Filter" => Some(0xBD),
+            "Gain" => Some(0xCF),
+            "Delay" => Some(0xCD),
+            "Effects" => Some(0xCE),
+            _ => None,
+        };
+        if let Some(h) = mode_hash {
+            let _ = engine.set_param(n.id, h, n.engine_subtype as f32);
+        }
     }
 
     // Open cpal output stream BEFORE starting engine
@@ -173,10 +185,7 @@ fn start_engine(
     let stream = open_cpal_stream(ring, sample_rate)?;
 
     engine.start()?;
-    *guard = Some(RunningEngine {
-        wrapper: engine,
-        _stream: stream,
-    });
+    *guard = Some(RunningEngine { wrapper: engine, _stream: stream });
     Ok(())
 }
 

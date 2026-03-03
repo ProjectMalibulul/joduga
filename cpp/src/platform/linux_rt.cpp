@@ -20,8 +20,13 @@ int set_thread_rt_priority(uint32_t cpu_core) {
 
     int ret = pthread_setschedparam(thread, SCHED_FIFO, &param);
     if (ret != 0) {
-        std::cerr << "Failed to set SCHED_FIFO: " << strerror(ret) << std::endl;
-        return -1;
+        // Graceful fallback: SCHED_FIFO needs CAP_SYS_NICE or rtprio limits.
+        // The audio thread will still work, just without hard real-time guarantees.
+        std::cerr << "[joduga] Note: could not set SCHED_FIFO (" << strerror(ret)
+                  << "). Audio will run at normal priority. "
+                  << "For RT scheduling, run with elevated privileges or set "
+                  << "rtprio in /etc/security/limits.conf" << std::endl;
+        // Don't return -1; let the engine continue at normal priority.
     }
 
     // Pin to CPU core

@@ -17,7 +17,7 @@ fn main() {
     eprintln!("===================================\n");
 
     // ── build shadow graph ──────────────────────────────────────────
-    let mut graph = ShadowGraph::new(4);
+    let mut graph = ShadowGraph::new(3); // output node id = 3
 
     let nodes = [
         (0, NodeType::Oscillator, 0, 1),

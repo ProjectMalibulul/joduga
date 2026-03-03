@@ -6,6 +6,11 @@
 /// - Zero allocations after init
 /// - Wait-free reader, lock-free writer
 /// - Cache-line padding avoids false sharing
+///
+/// Memory ordering contract:
+/// - Producer loads head (Relaxed), loads tail (Acquire), stores head (Release)
+/// - Consumer loads tail (Relaxed), loads head (Acquire), stores tail (Release)
+/// - This ensures the written data is visible before the index advances.
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -30,11 +35,13 @@ pub struct MIDIEventCmd {
     pub timestamp_samples: u32,
 }
 
+/// Shared status register between Rust and C++.
+/// All fields are atomic to prevent data races across threads.
 #[repr(C)]
 #[derive(Debug)]
 pub struct StatusRegister {
-    pub graph_version: u32,
-    pub adopted_version: u32,
+    pub graph_version: std::sync::atomic::AtomicU32,
+    pub adopted_version: std::sync::atomic::AtomicU32,
     pub reserved: [u32; 2],
 }
 
@@ -47,10 +54,19 @@ pub struct LockFreeRingBuffer<T: Clone + Copy> {
     mask: usize,
 }
 
+// SAFETY: The buffer is only written by the producer (via head) and read by
+// the consumer (via tail). The atomic indices enforce the happens-before
+// relationship across threads. T is Copy so there are no destructors to worry
+// about on the data itself.
+unsafe impl<T: Clone + Copy + Send> Send for LockFreeRingBuffer<T> {}
+unsafe impl<T: Clone + Copy + Send> Sync for LockFreeRingBuffer<T> {}
+
 impl<T: Clone + Copy> LockFreeRingBuffer<T> {
     pub fn new(capacity: usize) -> Self {
         assert!(capacity.is_power_of_two(), "Capacity must be power of 2");
+        assert!(capacity >= 2, "Capacity must be at least 2");
         Self {
+            // SAFETY: T is Copy (no drop glue) and we zero-init all slots.
             buffer: vec![unsafe { std::mem::zeroed() }; capacity],
             head: Arc::new(AtomicUsize::new(0)),
             tail: Arc::new(AtomicUsize::new(0)),
@@ -75,12 +91,22 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
 
     // ── Producer (Rust thread) ──────────────────────────────────────
 
+    /// Enqueue an item. Returns Err(item) if the queue is full.
+    ///
+    /// # Memory ordering
+    /// - head is owned by the producer, so Relaxed load is sufficient.
+    /// - tail is written by the consumer, so Acquire load synchronises with
+    ///   the consumer's Release store, making dequeued slots visible.
+    /// - After writing the item, head is stored with Release so the consumer
+    ///   sees the data before it sees the updated head.
     pub fn enqueue(&self, item: T) -> Result<(), T> {
-        let head = self.head.load(Ordering::Acquire);
+        let head = self.head.load(Ordering::Relaxed);
         let next = (head + 1) & self.mask;
         if next == self.tail.load(Ordering::Acquire) {
             return Err(item); // full
         }
+        // SAFETY: head index is within [0, capacity) and only this thread
+        // writes to buffer[head]. The consumer never reads past its tail.
         unsafe {
             ptr::write((self.buffer.as_ptr() as *mut T).add(head), item);
         }
@@ -90,16 +116,21 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
 
     // ── Consumer (C++ thread reads directly; this is for tests) ─────
 
+    /// Dequeue up to `out.len()` items. Returns the count actually read.
+    ///
+    /// # Memory ordering
+    /// - tail is owned by the consumer, so Relaxed load is sufficient.
+    /// - head is written by the producer, so Acquire load synchronises
+    ///   to see items that were enqueued.
+    /// - After reading, tail is stored with Release so the producer can
+    ///   reclaim those slots.
     pub fn dequeue(&self, out: &mut [T]) -> usize {
-        let tail = self.tail.load(Ordering::Acquire);
+        let tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
-        let avail = if head >= tail {
-            head - tail
-        } else {
-            self.buffer.len() - tail + head
-        };
+        let avail = (head.wrapping_sub(tail)) & self.mask;
         let n = avail.min(out.len());
         for (i, slot) in out.iter_mut().enumerate().take(n) {
+            // SAFETY: index is within bounds and producer has finished writing.
             *slot = unsafe { ptr::read(self.buffer.as_ptr().add((tail + i) & self.mask)) };
         }
         if n > 0 {
@@ -111,11 +142,7 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
     pub fn len(&self) -> usize {
         let h = self.head.load(Ordering::Relaxed);
         let t = self.tail.load(Ordering::Relaxed);
-        if h >= t {
-            h - t
-        } else {
-            self.buffer.len() - t + h
-        }
+        (h.wrapping_sub(t)) & self.mask
     }
 
     pub fn is_empty(&self) -> bool {
@@ -145,5 +172,32 @@ mod tests {
         assert!(q.enqueue(2).is_ok());
         assert!(q.enqueue(3).is_ok());
         assert!(q.enqueue(4).is_err());
+    }
+
+    #[test]
+    fn wraparound() {
+        let q = LockFreeRingBuffer::<u32>::new(4);
+        // Fill and drain twice to test wraparound
+        for round in 0..3 {
+            let base = round * 10;
+            assert!(q.enqueue(base + 1).is_ok());
+            assert!(q.enqueue(base + 2).is_ok());
+            let mut out = [0u32; 2];
+            assert_eq!(q.dequeue(&mut out), 2);
+            assert_eq!(out, [base + 1, base + 2]);
+            assert!(q.is_empty());
+        }
+    }
+
+    #[test]
+    fn len_tracks_correctly() {
+        let q = LockFreeRingBuffer::<u32>::new(8);
+        assert_eq!(q.len(), 0);
+        q.enqueue(1).unwrap();
+        q.enqueue(2).unwrap();
+        assert_eq!(q.len(), 2);
+        let mut out = [0u32; 1];
+        q.dequeue(&mut out);
+        assert_eq!(q.len(), 1);
     }
 }
