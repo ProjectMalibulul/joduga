@@ -148,6 +148,7 @@ impl ShadowGraph {
     }
 
     /// Compile into the C FFI structures.
+    #[allow(clippy::type_complexity)]
     pub fn compile(&self) -> Result<(Vec<NodeDesc>, Vec<NodeConnection>, Vec<u32>), String> {
         let exec_order = self.topological_sort()?;
 

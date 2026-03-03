@@ -43,7 +43,7 @@ impl MidiInputHandler {
         let port = match port_name {
             Some(name) => ports
                 .iter()
-                .find(|p| midi_in.port_name(p).map_or(false, |n| n.contains(name)))
+                .find(|p| midi_in.port_name(p).is_ok_and(|n| n.contains(name)))
                 .ok_or_else(|| format!("MIDI port containing '{name}' not found"))?,
             None => &ports[0],
         };

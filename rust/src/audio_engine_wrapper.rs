@@ -62,8 +62,8 @@ impl OutputRingBuffer {
         let tail = self.tail.load(Ordering::Relaxed);
         let available = head.wrapping_sub(tail) & self.mask;
         let n = dest.len().min(available);
-        for i in 0..n {
-            dest[i] = self.buffer[(tail + i) & self.mask];
+        for (i, sample) in dest.iter_mut().enumerate().take(n) {
+            *sample = self.buffer[(tail + i) & self.mask];
         }
         if n > 0 {
             self.tail.store((tail + n) & self.mask, Ordering::Release);

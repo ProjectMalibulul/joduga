@@ -1272,8 +1272,11 @@ impl eframe::App for JodugaApp {
                     .inner_margin(egui::Margin::same(8)),
             )
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("toolbar_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                        egui::Order::Tooltip,
+                        egui::Id::new("toolbar_layer"),
+                    )),
                     |ui| {
                         ui.horizontal(|ui| {
                             ui.heading(egui::RichText::new("🎵 Joduga").strong().color(ACCENT));
@@ -1342,8 +1345,11 @@ impl eframe::App for JodugaApp {
                     .inner_margin(egui::Margin::same(4)),
             )
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("waveform_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                        egui::Order::Tooltip,
+                        egui::Id::new("waveform_layer"),
+                    )),
                     |ui| {
                         let wf_data = self.waveform.lock().unwrap().clone();
                         let points: PlotPoints = wf_data
@@ -1376,8 +1382,11 @@ impl eframe::App for JodugaApp {
                     .inner_margin(egui::Margin::same(8)),
             )
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("catalog_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                        egui::Order::Tooltip,
+                        egui::Id::new("catalog_layer"),
+                    )),
                     |ui| {
                         ui.heading(egui::RichText::new("Node Catalog").color(ACCENT));
                         ui.separator();
@@ -1457,8 +1466,11 @@ impl eframe::App for JodugaApp {
                         .inner_margin(egui::Margin::same(8)),
                 )
                 .show(ctx, |ui| {
-                    ui.with_layer_id(
-                        egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("settings_layer")),
+                    ui.scope_builder(
+                        egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                            egui::Order::Tooltip,
+                            egui::Id::new("settings_layer"),
+                        )),
                         |ui| {
                             ui.heading(egui::RichText::new("⚙ Settings").color(ACCENT));
                             ui.separator();
@@ -1627,11 +1639,11 @@ impl eframe::App for JodugaApp {
 
                     // Quick-access: Output first
                     for (idx, tmpl) in self.catalog.iter().enumerate() {
-                        if tmpl.name == "Speaker Output" {
-                            if ui.button(format!("{} {}", tmpl.icon, tmpl.name)).clicked() {
-                                actions.push(UiAction::AddNode(idx, click_world_pos));
-                                ui.close_menu();
-                            }
+                        if tmpl.name == "Speaker Output"
+                            && ui.button(format!("{} {}", tmpl.icon, tmpl.name)).clicked()
+                        {
+                            actions.push(UiAction::AddNode(idx, click_world_pos));
+                            ui.close_menu();
                         }
                     }
                     ui.separator();
@@ -1647,11 +1659,11 @@ impl eframe::App for JodugaApp {
                     ] {
                         ui.menu_button(cat_name, |ui| {
                             for (idx, tmpl) in self.catalog.iter().enumerate() {
-                                if tmpl.category == cat_name {
-                                    if ui.button(format!("{} {}", tmpl.icon, tmpl.name)).clicked() {
-                                        actions.push(UiAction::AddNode(idx, click_world_pos));
-                                        ui.close_menu();
-                                    }
+                                if tmpl.category == cat_name
+                                    && ui.button(format!("{} {}", tmpl.icon, tmpl.name)).clicked()
+                                {
+                                    actions.push(UiAction::AddNode(idx, click_world_pos));
+                                    ui.close_menu();
                                 }
                             }
                         });
@@ -1957,10 +1969,11 @@ impl eframe::App for JodugaApp {
         }
 
         // Cancel pending wire on Escape
-        if self.pending_wire.is_some() && !wire_completed {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.pending_wire = None;
-            }
+        if self.pending_wire.is_some()
+            && !wire_completed
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            self.pending_wire = None;
         }
 
         // Continuous repaint while engine is running (for waveform animation)

@@ -99,8 +99,8 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
             self.buffer.len() - tail + head
         };
         let n = avail.min(out.len());
-        for i in 0..n {
-            out[i] = unsafe { ptr::read(self.buffer.as_ptr().add((tail + i) & self.mask)) };
+        for (i, slot) in out.iter_mut().enumerate().take(n) {
+            *slot = unsafe { ptr::read(self.buffer.as_ptr().add((tail + i) & self.mask)) };
         }
         if n > 0 {
             self.tail.store((tail + n) & self.mask, Ordering::Release);
