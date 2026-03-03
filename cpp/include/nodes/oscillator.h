@@ -7,6 +7,7 @@
 #pragma once
 
 #include "audio_node.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
