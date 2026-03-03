@@ -19,6 +19,7 @@
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
+#include <chrono>
 
 // ── Internal engine state ──────────────────────────────────────────────
 struct AudioEngineImpl
@@ -125,12 +126,13 @@ static void audio_thread_main(AudioEngineImpl *e)
     const uint64_t block_ns =
         static_cast<uint64_t>(e->block_size) * 1000000000ULL / e->sample_rate;
 
+    auto get_now_ns = []() -> uint64_t {
+        auto now = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    };
+
     // Get initial time reference
-    struct timespec now_ts;
-    clock_gettime(CLOCK_MONOTONIC, &now_ts);
-    uint64_t next_deadline_ns =
-        static_cast<uint64_t>(now_ts.tv_sec) * 1000000000ULL +
-        static_cast<uint64_t>(now_ts.tv_nsec) + block_ns;
+    uint64_t next_deadline_ns = get_now_ns() + block_ns;
 
     while (e->is_running.load(std::memory_order_acquire))
     {
@@ -200,17 +202,13 @@ static void audio_thread_main(AudioEngineImpl *e)
         }
 
         if (e->status_register)
-            __atomic_fetch_add(&e->status_register->graph_version, 1u,
-                               __ATOMIC_RELEASE);
+            reinterpret_cast<std::atomic<uint32_t>*>(&e->status_register->graph_version)->fetch_add(1u, std::memory_order_release);
 
         // ── Deadline-based pacing ────────────────────────────────
         // Sleep only the remaining time until the next block deadline.
         // If we're behind schedule (processing took longer than block_ns),
         // skip the sleep and let the engine catch up.
-        clock_gettime(CLOCK_MONOTONIC, &now_ts);
-        uint64_t now_ns =
-            static_cast<uint64_t>(now_ts.tv_sec) * 1000000000ULL +
-            static_cast<uint64_t>(now_ts.tv_nsec);
+        uint64_t now_ns = get_now_ns();
         if (now_ns < next_deadline_ns)
         {
             rt_platform::sleep_precise_ns(next_deadline_ns - now_ns);
