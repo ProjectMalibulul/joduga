@@ -7,8 +7,8 @@ set(CMAKE_CXX_VISIBILITY_PRESET default)
 
 # Detect OS and set platform-specific flags
 if(UNIX AND NOT APPLE)
-  # Linux: aggressive optimization, SIMD, fast math
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -ffast-math -ftree-vectorize")
+  # Linux: optimization, SIMD, fast math (use -march=x86-64-v2 for broad compat)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=x86-64-v2 -ffast-math -ftree-vectorize")
   set(RT_LIB pthread rt)
   set(PLATFORM_SOURCES cpp/src/platform/linux_rt.cpp)
 elseif(WIN32)
@@ -18,8 +18,8 @@ elseif(WIN32)
   set(PLATFORM_SOURCES cpp/src/platform/windows_rt.cpp)
 endif()
 
-# Core audio engine library (shared object exposed to Rust)
-add_library(joduga_audio SHARED
+# Core audio engine library (static archive linked into Rust binary)
+add_library(joduga_audio STATIC
   cpp/src/audio_engine.cpp
   cpp/src/audio_node.cpp
   cpp/src/nodes/oscillator.cpp
@@ -28,19 +28,18 @@ add_library(joduga_audio SHARED
   ${PLATFORM_SOURCES}
 )
 
+# PIC required because this static lib is linked into a PIE executable
+set_target_properties(joduga_audio PROPERTIES
+  LINKER_LANGUAGE CXX
+  POSITION_INDEPENDENT_CODE ON
+)
+
 target_include_directories(joduga_audio
   PUBLIC cpp/include
 )
 
 target_link_libraries(joduga_audio
   PRIVATE ${RT_LIB}
-)
-
-# Ensure C ABI is used for FFI
-set_target_properties(joduga_audio PROPERTIES
-  LINKER_LANGUAGE CXX
-  VERSION 0.1.0
-  SOVERSION 0
 )
 
 # Install target (required by Rust cmake crate)

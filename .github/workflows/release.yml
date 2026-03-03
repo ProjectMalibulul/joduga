@@ -1,13 +1,14 @@
-name: CI
+name: Release
 
 on:
   push:
-    branches: [main, test/cd]
-  pull_request:
-    branches: [main, test/cd]
+    tags: ["v*"]
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-linux:
     runs-on: ubuntu-24.04
 
     env:
@@ -63,9 +64,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-release-cargo-
 
       # -------------------------
       # Build Tauri App (C++ is built automatically via cmake crate)
@@ -92,7 +93,7 @@ jobs:
           echo "OK: libjoduga_audio is statically linked"
 
       # -------------------------
-      # Upload Debian Package
+      # Upload build artifacts
       # -------------------------
       - name: Upload Debian package
         uses: actions/upload-artifact@v4
@@ -105,3 +106,29 @@ jobs:
         with:
           name: joduga-linux-rpm
           path: target/release/bundle/rpm/*.rpm
+
+  # -------------------------
+  # Create GitHub Release
+  # -------------------------
+  release:
+    needs: [build-linux]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/joduga-linux-deb/*.deb
+            artifacts/joduga-linux-rpm/*.rpm
