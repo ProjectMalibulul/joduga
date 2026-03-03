@@ -11,7 +11,6 @@
 /// - Producer loads head (Relaxed), loads tail (Acquire), stores head (Release)
 /// - Consumer loads tail (Relaxed), loads head (Acquire), stores tail (Release)
 /// - This ensures the written data is visible before the index advances.
-
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -77,10 +76,18 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
 
     // ── FFI pointers ────────────────────────────────────────────────
 
-    pub fn as_ptr(&self) -> *const T { self.buffer.as_ptr() }
-    pub fn head_ptr(&self) -> *const AtomicUsize { self.head.as_ref() }
-    pub fn tail_ptr(&self) -> *const AtomicUsize { self.tail.as_ref() }
-    pub fn capacity(&self) -> usize { self.buffer.len() }
+    pub fn as_ptr(&self) -> *const T {
+        self.buffer.as_ptr()
+    }
+    pub fn head_ptr(&self) -> *const AtomicUsize {
+        self.head.as_ref()
+    }
+    pub fn tail_ptr(&self) -> *const AtomicUsize {
+        self.tail.as_ref()
+    }
+    pub fn capacity(&self) -> usize {
+        self.buffer.len()
+    }
 
     // ── Producer (Rust thread) ──────────────────────────────────────
 
@@ -100,7 +107,9 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
         }
         // SAFETY: head index is within [0, capacity) and only this thread
         // writes to buffer[head]. The consumer never reads past its tail.
-        unsafe { ptr::write((self.buffer.as_ptr() as *mut T).add(head), item); }
+        unsafe {
+            ptr::write((self.buffer.as_ptr() as *mut T).add(head), item);
+        }
         self.head.store(next, Ordering::Release);
         Ok(())
     }
@@ -120,11 +129,13 @@ impl<T: Clone + Copy> LockFreeRingBuffer<T> {
         let head = self.head.load(Ordering::Acquire);
         let avail = (head.wrapping_sub(tail)) & self.mask;
         let n = avail.min(out.len());
-        for i in 0..n {
+        for (i, slot) in out.iter_mut().enumerate().take(n) {
             // SAFETY: index is within bounds and producer has finished writing.
-            out[i] = unsafe { ptr::read(self.buffer.as_ptr().add((tail + i) & self.mask)) };
+            *slot = unsafe { ptr::read(self.buffer.as_ptr().add((tail + i) & self.mask)) };
         }
-        if n > 0 { self.tail.store((tail + n) & self.mask, Ordering::Release); }
+        if n > 0 {
+            self.tail.store((tail + n) & self.mask, Ordering::Release);
+        }
         n
     }
 

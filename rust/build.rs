@@ -9,9 +9,7 @@ fn main() {
     let workspace_root = manifest_dir.parent().unwrap();
 
     // Build the C++ library using CMake
-    let dst = cmake::Config::new(workspace_root)
-        .define("CMAKE_BUILD_TYPE", "Release")
-        .build();
+    let dst = cmake::Config::new(workspace_root).define("CMAKE_BUILD_TYPE", "Release").build();
 
     // Tell cargo to link the static library
     println!("cargo:rustc-link-search=native={}/lib", dst.display());

@@ -4,9 +4,8 @@
 //! Automatic cleanup on drop — stops the engine and frees C++ resources.
 
 use crate::ffi::{
-    audio_engine_destroy, audio_engine_init, audio_engine_is_running,
-    audio_engine_start, audio_engine_stop,
-    AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc,
+    audio_engine_destroy, audio_engine_init, audio_engine_is_running, audio_engine_start,
+    audio_engine_stop, AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc,
 };
 use crate::lockfree_queue::{LockFreeRingBuffer, MIDIEventCmd, ParamUpdateCmd, StatusRegister};
 
@@ -63,8 +62,8 @@ impl OutputRingBuffer {
         let tail = self.tail.load(Ordering::Relaxed);
         let available = head.wrapping_sub(tail) & self.mask;
         let n = dest.len().min(available);
-        for i in 0..n {
-            dest[i] = self.buffer[(tail + i) & self.mask];
+        for (i, sample) in dest.iter_mut().enumerate().take(n) {
+            *sample = self.buffer[(tail + i) & self.mask];
         }
         if n > 0 {
             self.tail.store((tail + n) & self.mask, Ordering::Release);
@@ -126,14 +125,14 @@ impl AudioEngineWrapper {
             audio_engine_init(
                 &graph,
                 &config,
-                param_queue.as_ptr()  as *const std::ffi::c_void,
+                param_queue.as_ptr() as *const std::ffi::c_void,
                 param_queue.capacity() as u32,
                 param_queue.head_ptr() as *const std::ffi::c_void,
                 param_queue.tail_ptr() as *mut std::ffi::c_void,
-                midi_queue.as_ptr()    as *const std::ffi::c_void,
-                midi_queue.capacity()  as u32,
-                midi_queue.head_ptr()  as *const std::ffi::c_void,
-                midi_queue.tail_ptr()  as *mut std::ffi::c_void,
+                midi_queue.as_ptr() as *const std::ffi::c_void,
+                midi_queue.capacity() as u32,
+                midi_queue.head_ptr() as *const std::ffi::c_void,
+                midi_queue.tail_ptr() as *mut std::ffi::c_void,
                 &mut *status_register,
                 output_ring.as_ptr() as *mut f32,
                 output_ring.capacity() as u32,
@@ -202,8 +201,12 @@ impl AudioEngineWrapper {
         unsafe { audio_engine_is_running(self.engine) != 0 }
     }
 
-    pub fn sample_rate(&self) -> u32 { self.sample_rate }
-    pub fn block_size(&self) -> u32 { self.block_size }
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    pub fn block_size(&self) -> u32 {
+        self.block_size
+    }
 
     /// Clone the `Arc` to the output ring for the cpal callback.
     pub fn output_ring(&self) -> Arc<OutputRingBuffer> {

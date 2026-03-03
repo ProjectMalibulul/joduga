@@ -1,7 +1,6 @@
 /// Minimal benchmark: measures lock-free queue throughput.
 ///
 /// Run with:  cargo run --example bench_queue -p joduga --release
-
 use joduga::lockfree_queue::{LockFreeRingBuffer, ParamUpdateCmd};
 use std::time::Instant;
 
@@ -11,12 +10,7 @@ const ITERATIONS: usize = 1_000_000;
 fn main() {
     let queue: LockFreeRingBuffer<ParamUpdateCmd> = LockFreeRingBuffer::new(CAPACITY);
 
-    let item = ParamUpdateCmd {
-        node_id: 1,
-        param_hash: 0,
-        value: 0.5,
-        padding: 0,
-    };
+    let item = ParamUpdateCmd { node_id: 1, param_hash: 0, value: 0.5, padding: 0 };
 
     let mut buf = [item; 1];
 

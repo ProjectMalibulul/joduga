@@ -70,14 +70,9 @@ fn parse_engine_type(s: &str) -> NodeType {
 }
 
 /// Open a cpal output stream that reads from the engine ring buffer.
-fn open_cpal_stream(
-    ring: Arc<OutputRingBuffer>,
-    sample_rate: u32,
-) -> Result<cpal::Stream, String> {
+fn open_cpal_stream(ring: Arc<OutputRingBuffer>, sample_rate: u32) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or("No audio output device found")?;
+    let device = host.default_output_device().ok_or("No audio output device found")?;
     let config = cpal::StreamConfig {
         channels: 1,
         sample_rate: cpal::SampleRate(sample_rate),
@@ -176,10 +171,7 @@ fn start_engine(
     let stream = open_cpal_stream(ring, sample_rate)?;
 
     engine.start()?;
-    *guard = Some(RunningEngine {
-        wrapper: engine,
-        _stream: stream,
-    });
+    *guard = Some(RunningEngine { wrapper: engine, _stream: stream });
     Ok(())
 }
 

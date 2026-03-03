@@ -50,22 +50,35 @@ public:
         // Apply pending parameter updates
         apply_pending_params(pending_params, num_params);
 
-        const float *in = inputs[0];
         float *out = outputs[0];
-
-        // If no input connected, output silence
-        if (!in || !out)
-        {
-            if (out)
-                std::memset(out, 0, num_samples * sizeof(float));
+        if (!out)
             return;
+
+        // Sum all connected inputs into the output buffer.
+        // This makes GainNode work as a mixer when multiple inputs
+        // are connected (e.g. "Mixer 2-Ch" has num_inputs=2).
+        bool any_input = false;
+        std::memset(out, 0, num_samples * sizeof(float));
+
+        for (uint32_t ch = 0; ch < num_inputs; ++ch)
+        {
+            const float *in = inputs[ch];
+            if (!in)
+                continue;
+            any_input = true;
+            for (uint32_t i = 0; i < num_samples; ++i)
+                out[i] += in[i];
         }
 
+        // If nothing was connected, output stays silent
+        if (!any_input)
+            return;
+
+        // Apply gain with smoothing
         for (uint32_t i = 0; i < num_samples; ++i)
         {
-            // Smooth gain interpolation to avoid clicks
             gain = gain * 0.99f + target_gain * 0.01f;
-            out[i] = in[i] * gain;
+            out[i] *= gain;
         }
     }
 };

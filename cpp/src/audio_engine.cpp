@@ -12,6 +12,7 @@
 #include <atomic>
 #include <memory>
 #include <cstring>
+#include <ctime>
 #include <iostream>
 #include <vector>
 #include <unordered_map>
@@ -44,7 +45,7 @@ struct AudioEngineImpl
         uint32_t to_input;
     };
     std::vector<SlotConn> slot_connections;
-    // Which slot feeds into the output node's first input (cached)
+    // Which slot is the output node (its scratch buffer is copied to ring)
     int32_t output_feeder_slot = -1;
 
     // Lock-free queues (Rust-owned memory)
@@ -105,9 +106,22 @@ static void audio_thread_main(AudioEngineImpl *e)
     // silently drop parameter updates.
     e->pending_params.resize(e->param_queue_capacity);
 
-    // Pre-compute block duration for sleep-based pacing
+    // Pre-compute block duration for deadline-based pacing.
+    // Instead of sleeping a fixed block_ns after processing (which causes
+    // total cycle = processing + block_ns > real-time rate, leading to
+    // periodic silence / underruns), we use a deadline approach:
+    //   next_deadline = now + block_ns
+    //   process block
+    //   sleep(next_deadline - now)
     const uint64_t block_ns =
         static_cast<uint64_t>(e->block_size) * 1000000000ULL / e->sample_rate;
+
+    // Get initial time reference
+    struct timespec now_ts;
+    clock_gettime(CLOCK_MONOTONIC, &now_ts);
+    uint64_t next_deadline_ns =
+        static_cast<uint64_t>(now_ts.tv_sec) * 1000000000ULL +
+        static_cast<uint64_t>(now_ts.tv_nsec) + block_ns;
 
     while (e->is_running.load(std::memory_order_acquire))
     {
@@ -180,8 +194,19 @@ static void audio_thread_main(AudioEngineImpl *e)
             __atomic_fetch_add(&e->status_register->graph_version, 1u,
                                __ATOMIC_RELEASE);
 
-        // Pace the thread so it doesn't spin at 100 % CPU
-        rt_platform::sleep_precise_ns(block_ns);
+        // ── Deadline-based pacing ────────────────────────────────
+        // Sleep only the remaining time until the next block deadline.
+        // If we're behind schedule (processing took longer than block_ns),
+        // skip the sleep and let the engine catch up.
+        clock_gettime(CLOCK_MONOTONIC, &now_ts);
+        uint64_t now_ns =
+            static_cast<uint64_t>(now_ts.tv_sec) * 1000000000ULL +
+            static_cast<uint64_t>(now_ts.tv_nsec);
+        if (now_ns < next_deadline_ns)
+        {
+            rt_platform::sleep_precise_ns(next_deadline_ns - now_ns);
+        }
+        next_deadline_ns += block_ns;
     }
 }
 
@@ -246,10 +271,14 @@ extern "C"
             e->slot_connections.push_back({static_cast<uint32_t>(fit->second),
                                            static_cast<uint32_t>(tit->second),
                                            c.to_input_idx});
+        }
 
-            // Cache which slot feeds the output node
-            if (c.to_node_id == e->output_node_id)
-                e->output_feeder_slot = static_cast<int32_t>(fit->second);
+        // Cache the output node's own slot so we copy its processed scratch
+        // buffer to the ring (not the raw feeder).
+        {
+            auto oit = e->node_id_to_slot.find(e->output_node_id);
+            if (oit != e->node_id_to_slot.end())
+                e->output_feeder_slot = static_cast<int32_t>(oit->second);
         }
 
         // Allocate scratch buffers
