@@ -1,58 +1,82 @@
 name: CI
 
 on:
-  push:
-    branches: [main, test/cd]
   pull_request:
-    branches: [main, test/cd]
+    branches: [main]
+  push:
+    branches: [main, test/cd, debug/core]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  build:
+  # ─────────────────────────────────────────────────────────────
+  # Lint & Format (runs once, fast gate)
+  # ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Format
     runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
 
-    env:
-      CARGO_TERM_COLOR: always
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: lint-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: lint-cargo-registry-
+
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake g++ pkg-config \
+            libasound2-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libssl-dev libsecret-1-dev
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ─────────────────────────────────────────────────────────────
+  # Cross-platform build + test matrix
+  # ─────────────────────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            rust: stable
+            cmake_generator: Unix Makefiles
+          - os: macos-latest
+            rust: stable
+            cmake_generator: Unix Makefiles
+          - os: windows-latest
+            rust: stable
+            cmake_generator: Visual Studio 17 2022
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # -------------------------
-      # System Dependencies
-      # -------------------------
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            g++ \
-            pkg-config \
-            libasound2-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libsecret-1-dev
-
-      # -------------------------
-      # Node Setup
-      # -------------------------
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-          cache: npm
-          cache-dependency-path: tauri-ui/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: tauri-ui
-        run: npm ci
-
-      # -------------------------
-      # Rust Setup
-      # -------------------------
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -63,45 +87,91 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
-      # -------------------------
-      # Build Tauri App (C++ is built automatically via cmake crate)
-      # -------------------------
-      - name: Build Tauri (release)
+      # ── Linux dependencies ──────────────────────────────────
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake g++ pkg-config \
+            libasound2-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libssl-dev libsecret-1-dev
+
+      # ── macOS dependencies ──────────────────────────────────
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      # ── Node.js for Tauri frontend ─────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
         working-directory: tauri-ui
-        run: npm run tauri build
+        run: npm install
 
-      # -------------------------
-      # Run Rust tests
-      # -------------------------
-      - name: Run Rust tests
+      # ── Validate CMake independently ────────────────────────
+      - name: Validate CMake configuration
+        run: cmake -B cmake-validate -DCMAKE_BUILD_TYPE=Release .
+
+      # ── Build core Rust + C++ library ───────────────────────
+      - name: Build workspace (release)
+        run: cargo build --workspace --release
+
+      # ── Run tests ───────────────────────────────────────────
+      - name: Run tests
         run: cargo test --workspace --release
 
-      # -------------------------
-      # Verify static linking
-      # -------------------------
-      - name: Verify no dynamic dependency on libjoduga_audio
+      # ── Build Tauri application ─────────────────────────────
+      - name: Build Tauri application
+        working-directory: tauri-ui
+        run: npx tauri build
+        env:
+          CI: true
+
+      # ── Verify static linking (Linux) ──────────────────────
+      - name: Verify static linking
+        if: runner.os == 'Linux'
         run: |
-          if ldd target/release/joduga-tauri | grep -q libjoduga_audio; then
-            echo "ERROR: binary still dynamically links libjoduga_audio"
+          if ldd target/release/joduga-tauri 2>/dev/null | grep -q libjoduga_audio; then
+            echo "ERROR: binary dynamically links libjoduga_audio"
             exit 1
           fi
           echo "OK: libjoduga_audio is statically linked"
 
-      # -------------------------
-      # Upload Debian Package
-      # -------------------------
-      - name: Upload Debian package
+      # ── Upload build artifacts ──────────────────────────────
+      - name: Upload Linux artifacts
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: joduga-linux-deb
-          path: target/release/bundle/deb/*.deb
+          name: joduga-linux
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            target/release/bundle/appimage/*.AppImage
+          if-no-files-found: warn
 
-      - name: Upload RPM package
+      - name: Upload macOS artifacts
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: joduga-linux-rpm
-          path: target/release/bundle/rpm/*.rpm
+          name: joduga-macos
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app
+          if-no-files-found: warn
+
+      - name: Upload Windows artifacts
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: joduga-windows
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+          if-no-files-found: warn

@@ -7,53 +7,41 @@ on:
 permissions:
   contents: write
 
-jobs:
-  build-linux:
-    runs-on: ubuntu-24.04
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
-    env:
-      CARGO_TERM_COLOR: always
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Cross-platform release builds
+  # ─────────────────────────────────────────────────────────────
+  build:
+    name: Release Build (${{ matrix.os }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact_name: joduga-linux
+            asset_glob: |
+              target/release/bundle/deb/*.deb
+              target/release/bundle/rpm/*.rpm
+              target/release/bundle/appimage/*.AppImage
+          - os: macos-latest
+            artifact_name: joduga-macos
+            asset_glob: |
+              target/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            artifact_name: joduga-windows
+            asset_glob: |
+              target/release/bundle/msi/*.msi
+              target/release/bundle/nsis/*.exe
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # -------------------------
-      # System Dependencies
-      # -------------------------
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            g++ \
-            pkg-config \
-            libasound2-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libsecret-1-dev
-
-      # -------------------------
-      # Node Setup
-      # -------------------------
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-          cache: npm
-          cache-dependency-path: tauri-ui/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: tauri-ui
-        run: npm ci
-
-      # -------------------------
-      # Rust Setup
-      # -------------------------
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -64,57 +52,75 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-release-cargo-${{ hashFiles('**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-release-cargo-
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-release-cargo-
 
-      # -------------------------
-      # Build Tauri App (C++ is built automatically via cmake crate)
-      # -------------------------
-      - name: Build Tauri (release)
+      # ── Linux dependencies ──────────────────────────────────
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake g++ pkg-config \
+            libasound2-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libssl-dev libsecret-1-dev
+
+      # ── macOS dependencies ──────────────────────────────────
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      # ── Node.js ─────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
         working-directory: tauri-ui
-        run: npm run tauri build
+        run: npm install
 
-      # -------------------------
-      # Run Rust tests
-      # -------------------------
-      - name: Run Rust tests
+      # ── Build ───────────────────────────────────────────────
+      - name: Build workspace
+        run: cargo build --workspace --release
+
+      - name: Run tests
         run: cargo test --workspace --release
 
-      # -------------------------
-      # Verify static linking
-      # -------------------------
-      - name: Verify no dynamic dependency on libjoduga_audio
+      - name: Build Tauri application
+        working-directory: tauri-ui
+        run: npx tauri build
+        env:
+          CI: true
+
+      # ── Verify (Linux) ─────────────────────────────────────
+      - name: Verify static linking
+        if: runner.os == 'Linux'
         run: |
-          if ldd target/release/joduga-tauri | grep -q libjoduga_audio; then
-            echo "ERROR: binary still dynamically links libjoduga_audio"
+          if ldd target/release/joduga-tauri 2>/dev/null | grep -q libjoduga_audio; then
+            echo "ERROR: binary dynamically links libjoduga_audio"
             exit 1
           fi
-          echo "OK: libjoduga_audio is statically linked"
 
-      # -------------------------
-      # Upload build artifacts
-      # -------------------------
-      - name: Upload Debian package
+      # ── Upload artifacts ────────────────────────────────────
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: joduga-linux-deb
-          path: target/release/bundle/deb/*.deb
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.asset_glob }}
+          if-no-files-found: warn
 
-      - name: Upload RPM package
-        uses: actions/upload-artifact@v4
-        with:
-          name: joduga-linux-rpm
-          path: target/release/bundle/rpm/*.rpm
-
-  # -------------------------
-  # Create GitHub Release
-  # -------------------------
+  # ─────────────────────────────────────────────────────────────
+  # Create GitHub Release & attach artifacts
+  # ─────────────────────────────────────────────────────────────
   release:
-    needs: [build-linux]
+    name: Publish Release
+    needs: build
     runs-on: ubuntu-24.04
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -127,8 +133,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') }}
           generate_release_notes: true
           files: |
-            artifacts/joduga-linux-deb/*.deb
-            artifacts/joduga-linux-rpm/*.rpm
+            artifacts/joduga-linux/**/*
+            artifacts/joduga-macos/**/*
+            artifacts/joduga-windows/**/*
