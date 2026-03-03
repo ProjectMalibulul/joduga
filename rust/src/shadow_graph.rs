@@ -37,11 +37,7 @@ pub struct ShadowGraph {
 
 impl ShadowGraph {
     pub fn new(output_node_id: u32) -> Self {
-        Self {
-            nodes: HashMap::new(),
-            edges: Vec::new(),
-            output_node_id,
-        }
+        Self { nodes: HashMap::new(), edges: Vec::new(), output_node_id }
     }
 
     pub fn add_node(&mut self, node: Node) -> Result<(), String> {
@@ -212,20 +208,13 @@ mod tests {
     use super::*;
 
     fn make_node(id: u32, t: NodeType, ni: u32, no: u32) -> Node {
-        Node {
-            id,
-            node_type: t,
-            num_inputs: ni,
-            num_outputs: no,
-            parameters: HashMap::new(),
-        }
+        Node { id, node_type: t, num_inputs: ni, num_outputs: no, parameters: HashMap::new() }
     }
 
     #[test]
     fn linear_chain() {
         let mut g = ShadowGraph::new(2);
-        g.add_node(make_node(0, NodeType::Oscillator, 0, 1))
-            .unwrap();
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
         g.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
         g.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
         g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
@@ -252,8 +241,7 @@ mod tests {
     fn non_contiguous_ids() {
         // IDs 10, 20, 30 — would crash the old vec-indexed cycle detection
         let mut g = ShadowGraph::new(30);
-        g.add_node(make_node(10, NodeType::Oscillator, 0, 1))
-            .unwrap();
+        g.add_node(make_node(10, NodeType::Oscillator, 0, 1)).unwrap();
         g.add_node(make_node(20, NodeType::Filter, 1, 1)).unwrap();
         g.add_node(make_node(30, NodeType::Output, 1, 0)).unwrap();
         g.add_edge(Edge { from_node_id: 10, from_output_idx: 0, to_node_id: 20, to_input_idx: 0 })

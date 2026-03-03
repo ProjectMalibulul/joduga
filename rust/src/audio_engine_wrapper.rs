@@ -112,11 +112,7 @@ impl AudioEngineWrapper {
             output_node_id,
         };
 
-        let config = AudioEngineConfig {
-            sample_rate,
-            block_size,
-            cpu_core,
-        };
+        let config = AudioEngineConfig { sample_rate, block_size, cpu_core };
 
         // 64K samples ~ 1.3 s at 48 kHz
         let output_ring = Arc::new(OutputRingBuffer::new(65536));
@@ -184,12 +180,7 @@ impl AudioEngineWrapper {
     /// Enqueue a parameter change for the audio thread.
     pub fn set_param(&self, node_id: u32, param_hash: u32, value: f32) -> Result<(), String> {
         self.param_queue
-            .enqueue(ParamUpdateCmd {
-                node_id,
-                param_hash,
-                value,
-                padding: 0,
-            })
+            .enqueue(ParamUpdateCmd { node_id, param_hash, value, padding: 0 })
             .map_err(|_| "param queue full".into())
     }
 
@@ -202,12 +193,7 @@ impl AudioEngineWrapper {
         timestamp_samples: u32,
     ) -> Result<(), String> {
         self.midi_queue
-            .enqueue(MIDIEventCmd {
-                event_type,
-                pitch,
-                velocity,
-                timestamp_samples,
-            })
+            .enqueue(MIDIEventCmd { event_type, pitch, velocity, timestamp_samples })
             .map_err(|_| "MIDI queue full".into())
     }
 

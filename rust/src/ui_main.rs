@@ -66,15 +66,7 @@ fn pd(
     log: bool,
     suffix: &'static str,
 ) -> ParamDef {
-    ParamDef {
-        name,
-        hash,
-        min,
-        max,
-        default,
-        log,
-        suffix,
-    }
+    ParamDef { name, hash, min, max, default, log, suffix }
 }
 
 #[derive(Clone)]
@@ -1056,15 +1048,9 @@ impl JodugaApp {
 
         // Find template indices for the default demo chain
         let osc_idx = 0; // Sine Oscillator
-        let flt_idx = cat
-            .iter()
-            .position(|t| t.name == "Low-Pass Filter")
-            .unwrap_or(14);
+        let flt_idx = cat.iter().position(|t| t.name == "Low-Pass Filter").unwrap_or(14);
         let gain_idx = cat.iter().position(|t| t.name == "Gain").unwrap_or(32);
-        let out_idx = cat
-            .iter()
-            .position(|t| t.name == "Speaker Output")
-            .unwrap_or(cat.len() - 1);
+        let out_idx = cat.iter().position(|t| t.name == "Speaker Output").unwrap_or(cat.len() - 1);
 
         let make_node = |id: usize, tidx: usize, x: f32, y: f32, cat: &[NodeTemplate]| {
             let tmpl = &cat[tidx];
@@ -1085,24 +1071,9 @@ impl JodugaApp {
             make_node(3, out_idx, 830.0, 20.0, &cat),
         ];
         let wires = vec![
-            Wire {
-                from_node: 0,
-                from_port: 0,
-                to_node: 1,
-                to_port: 0,
-            },
-            Wire {
-                from_node: 1,
-                from_port: 0,
-                to_node: 2,
-                to_port: 0,
-            },
-            Wire {
-                from_node: 2,
-                from_port: 0,
-                to_node: 3,
-                to_port: 0,
-            },
+            Wire { from_node: 0, from_port: 0, to_node: 1, to_port: 0 },
+            Wire { from_node: 1, from_port: 0, to_node: 2, to_port: 0 },
+            Wire { from_node: 2, from_port: 0, to_node: 3, to_port: 0 },
         ];
 
         Self {
@@ -1281,9 +1252,7 @@ fn open_cpal_stream(
     sample_rate: u32,
 ) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or("No audio output device found")?;
+    let device = host.default_output_device().ok_or("No audio output device found")?;
     let config = cpal::StreamConfig {
         channels: 1,
         sample_rate: cpal::SampleRate(sample_rate),
@@ -1344,11 +1313,7 @@ impl eframe::App for JodugaApp {
 
         // ── Top toolbar ─────────────────────────────────────────────
         let toolbar_resp = egui::TopBottomPanel::top("toolbar")
-            .frame(
-                egui::Frame::new()
-                    .fill(SURFACE)
-                    .inner_margin(egui::Margin::same(8)),
-            )
+            .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(8)))
             .show(ctx, |ui| {
                 ui.scope_builder(
                     egui::UiBuilder::new().layer_id(egui::LayerId::new(
@@ -1414,11 +1379,7 @@ impl eframe::App for JodugaApp {
         // ── Bottom waveform panel ───────────────────────────────────
         let waveform_resp = egui::TopBottomPanel::bottom("waveform_panel")
             .exact_height(100.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(SURFACE)
-                    .inner_margin(egui::Margin::same(4)),
-            )
+            .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(4)))
             .show(ctx, |ui| {
                 ui.scope_builder(
                     egui::UiBuilder::new().layer_id(egui::LayerId::new(

@@ -58,9 +58,7 @@ impl MidiInputHandler {
             (),
         )?;
 
-        Ok(Self {
-            _connection: Some(conn),
-        })
+        Ok(Self { _connection: Some(conn) })
     }
 }
 
