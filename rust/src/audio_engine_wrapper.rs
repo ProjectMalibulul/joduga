@@ -86,9 +86,10 @@ impl AudioEngineWrapper {
         let param_queue = LockFreeRingBuffer::<ParamUpdateCmd>::new(8192);
         let midi_queue = LockFreeRingBuffer::<MIDIEventCmd>::new(4096);
         let mut status_register = Box::new(StatusRegister {
-            graph_version: AtomicU32::new(0),
-            adopted_version: AtomicU32::new(0),
-            reserved: [0, 0],
+            graph_version: 0,
+            adopted_version: 0,
+            cpu_load_permil: 0,
+            reserved: 0,
         });
 
         // Build CompiledGraph from owned vecs.
@@ -211,6 +212,15 @@ impl AudioEngineWrapper {
     /// Clone the `Arc` to the output ring for the cpal callback.
     pub fn output_ring(&self) -> Arc<OutputRingBuffer> {
         Arc::clone(&self.output_ring)
+    }
+
+    pub fn cpu_load_permil(&self) -> u32 {
+        // SAFETY: field is naturally aligned u32 with static lifetime tied to self.
+        // C++ updates it atomically via std::atomic_ref; we read atomically here.
+        unsafe {
+            AtomicU32::from_ptr(&self.status_register.cpu_load_permil as *const u32 as *mut u32)
+                .load(Ordering::Acquire)
+        }
     }
 }
 

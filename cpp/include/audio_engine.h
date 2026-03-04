@@ -27,6 +27,7 @@ extern "C"
         NODE_TYPE_OUTPUT = 3,
         NODE_TYPE_DELAY = 4,
         NODE_TYPE_EFFECTS = 5,
+        NODE_TYPE_REVERB = 6,
     } NodeType;
 
     /// Node description (must match Rust CompiledGraph layout)
@@ -77,14 +78,14 @@ extern "C"
     } ParamUpdateCmd;
 
     /// Status register shared between Rust and C++.
-    /// These fields are accessed atomically from multiple threads.
-    /// On the Rust side they are AtomicU32; on the C++ side, we use
-    /// __atomic builtins to ensure correct visibility.
+    /// Fields are plain integers for stable ABI layout across languages.
+    /// Each side must access them atomically via atomic_ref / AtomicU32::from_ptr.
     typedef struct
     {
         uint32_t graph_version;
         uint32_t adopted_version;
-        uint32_t reserved[2];
+        uint32_t cpu_load_permil;
+        uint32_t reserved;
     } StatusRegister;
 
     /// Opaque audio engine handle

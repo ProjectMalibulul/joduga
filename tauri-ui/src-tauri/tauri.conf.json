@@ -1,7 +1,7 @@
 {
   "productName": "Joduga",
   "version": "0.1.0",
-  "identifier": "com.joduga",
+  "identifier": "com.joduga.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",

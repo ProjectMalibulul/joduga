@@ -90,12 +90,26 @@ impl ShadowGraph {
         Ok(())
     }
 
-    /// Remove an edge between two nodes.
-    pub fn remove_edge(&mut self, from_node_id: u32, to_node_id: u32) -> Result<(), String> {
+    /// Remove a specific edge between two nodes and ports.
+    pub fn remove_edge(
+        &mut self,
+        from_node_id: u32,
+        from_output_idx: u32,
+        to_node_id: u32,
+        to_input_idx: u32,
+    ) -> Result<(), String> {
         let before = self.edges.len();
-        self.edges.retain(|e| !(e.from_node_id == from_node_id && e.to_node_id == to_node_id));
+        self.edges.retain(|e| {
+            !(e.from_node_id == from_node_id
+                && e.from_output_idx == from_output_idx
+                && e.to_node_id == to_node_id
+                && e.to_input_idx == to_input_idx)
+        });
         if self.edges.len() == before {
-            return Err(format!("No edge from {} to {}", from_node_id, to_node_id));
+            return Err(format!(
+                "No edge from {}:{} to {}:{}",
+                from_node_id, from_output_idx, to_node_id, to_input_idx
+            ));
         }
         Ok(())
     }
@@ -277,7 +291,7 @@ mod tests {
         g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
             .unwrap();
         assert_eq!(g.edges.len(), 1);
-        g.remove_edge(0, 1).unwrap();
+        g.remove_edge(0, 0, 1, 0).unwrap();
         assert!(g.edges.is_empty());
     }
 

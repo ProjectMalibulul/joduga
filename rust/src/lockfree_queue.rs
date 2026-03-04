@@ -36,13 +36,15 @@ pub struct MIDIEventCmd {
 }
 
 /// Shared status register between Rust and C++.
-/// All fields are atomic to prevent data races across threads.
+/// Plain integers are used to preserve ABI layout with C++.
+/// Access atomically via AtomicU32::from_ptr on the accessor side.
 #[repr(C)]
 #[derive(Debug)]
 pub struct StatusRegister {
-    pub graph_version: std::sync::atomic::AtomicU32,
-    pub adopted_version: std::sync::atomic::AtomicU32,
-    pub reserved: [u32; 2],
+    pub graph_version: u32,
+    pub adopted_version: u32,
+    pub cpu_load_permil: u32,
+    pub reserved: u32,
 }
 
 // ── Ring buffer ────────────────────────────────────────────────────────
