@@ -220,10 +220,7 @@ fn set_param(
 #[tauri::command]
 fn get_engine_cpu_load_permil(state: State<'_, EngineState>) -> Result<u32, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(guard
-        .as_ref()
-        .map(|eng| eng.wrapper.cpu_load_permil())
-        .unwrap_or(0))
+    Ok(guard.as_ref().map(|eng| eng.wrapper.cpu_load_permil()).unwrap_or(0))
 }
 
 /* -- entry point -------------------------------------------- */
