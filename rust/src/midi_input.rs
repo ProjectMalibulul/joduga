@@ -11,10 +11,10 @@ use std::sync::Arc;
 /// Standard MIDI status nibbles.
 #[repr(u32)]
 pub enum MidiStatus {
-    NoteOff        = 0x80,
-    NoteOn         = 0x90,
-    ControlChange  = 0xB0,
-    PitchBend      = 0xE0,
+    NoteOff = 0x80,
+    NoteOn = 0x90,
+    ControlChange = 0xB0,
+    PitchBend = 0xE0,
 }
 
 /// Owns a `midir` connection for the lifetime of MIDI input.
@@ -43,7 +43,7 @@ impl MidiInputHandler {
         let port = match port_name {
             Some(name) => ports
                 .iter()
-                .find(|p| midi_in.port_name(p).map_or(false, |n| n.contains(name)))
+                .find(|p| midi_in.port_name(p).is_ok_and(|n| n.contains(name)))
                 .ok_or_else(|| format!("MIDI port containing '{name}' not found"))?,
             None => &ports[0],
         };
@@ -64,7 +64,9 @@ impl MidiInputHandler {
 
 /// Parse a raw MIDI message and push it into the lock-free queue.
 fn dispatch(queue: &LockFreeRingBuffer<MIDIEventCmd>, msg: &[u8]) {
-    if msg.is_empty() { return; }
+    if msg.is_empty() {
+        return;
+    }
 
     let status = msg[0] & 0xF0;
     let cmd = match (status, msg.len()) {
@@ -82,7 +84,7 @@ fn dispatch(queue: &LockFreeRingBuffer<MIDIEventCmd>, msg: &[u8]) {
         },
         (0xB0, 3..) => MIDIEventCmd {
             event_type: MidiStatus::ControlChange as u32,
-            pitch: msg[1] as u32,   // controller number
+            pitch: msg[1] as u32,    // controller number
             velocity: msg[2] as u32, // controller value
             timestamp_samples: 0,
         },

@@ -1,0 +1,5 @@
+# clippy.toml — project-wide Clippy configuration
+# See: https://doc.rust-lang.org/clippy/lint_configuration.html
+
+# Warn when types get overly complex
+type-complexity-threshold = 300

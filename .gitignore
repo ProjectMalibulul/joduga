@@ -2,10 +2,10 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
 
 # C++ Build Artifacts
 /build/
+/cmake-build/
 /cpp/build/
 *.o
 *.so
@@ -18,6 +18,9 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 *.cmake
+
+# Staged native libraries (built during CI/local build)
+tauri-ui/external_libs/
 
 # IDE
 .vscode/

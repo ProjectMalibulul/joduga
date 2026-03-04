@@ -6,15 +6,20 @@
 #include "nodes/oscillator.h"
 #include "nodes/filter.h"
 #include "nodes/gain.h"
+#include "nodes/delay.h"
+#include "nodes/effects.h"
 #include "platform/rt_platform.h"
 
 #include <thread>
 #include <atomic>
 #include <memory>
 #include <cstring>
+#include <ctime>
 #include <iostream>
 #include <vector>
 #include <unordered_map>
+#include <algorithm>
+#include <chrono>
 
 // ── Internal engine state ──────────────────────────────────────────────
 struct AudioEngineImpl
@@ -44,7 +49,7 @@ struct AudioEngineImpl
         uint32_t to_input;
     };
     std::vector<SlotConn> slot_connections;
-    // Which slot feeds into the output node's first input (cached)
+    // Which slot is the output node (its scratch buffer is copied to ring)
     int32_t output_feeder_slot = -1;
 
     // Lock-free queues (Rust-owned memory)
@@ -66,11 +71,11 @@ struct AudioEngineImpl
     std::atomic<size_t> *output_ring_head = nullptr;
     const std::atomic<size_t> *output_ring_tail = nullptr;
 
-    // Working buffer
+    // Working buffer — sized to match the param queue so we never truncate
     std::vector<ParamUpdateCmd> pending_params;
 };
 
-static AudioEngineImpl *g_audio_engine = nullptr;
+// Note: removed global singleton; each engine is now independent.
 
 // ── Node factory ───────────────────────────────────────────────────────
 static std::unique_ptr<AudioNode> create_node(NodeType type, uint32_t node_id)
@@ -88,6 +93,12 @@ static std::unique_ptr<AudioNode> create_node(NodeType type, uint32_t node_id)
     case NODE_TYPE_OUTPUT:
         node = std::make_unique<GainNode>();
         break;
+    case NODE_TYPE_DELAY:
+        node = std::make_unique<DelayNode>();
+        break;
+    case NODE_TYPE_EFFECTS:
+        node = std::make_unique<EffectsNode>();
+        break;
     default:
         std::cerr << "[joduga] Unknown node type: " << type << "\n";
         return nullptr;
@@ -101,11 +112,27 @@ static void audio_thread_main(AudioEngineImpl *e)
 {
     rt_platform::set_thread_rt_priority(e->cpu_core);
 
-    e->pending_params.resize(256);
+    // Size the working buffer to match the queue capacity so we never
+    // silently drop parameter updates.
+    e->pending_params.resize(e->param_queue_capacity);
 
-    // Pre-compute block duration for sleep-based pacing
+    // Pre-compute block duration for deadline-based pacing.
+    // Instead of sleeping a fixed block_ns after processing (which causes
+    // total cycle = processing + block_ns > real-time rate, leading to
+    // periodic silence / underruns), we use a deadline approach:
+    //   next_deadline = now + block_ns
+    //   process block
+    //   sleep(next_deadline - now)
     const uint64_t block_ns =
         static_cast<uint64_t>(e->block_size) * 1000000000ULL / e->sample_rate;
+
+    auto get_now_ns = []() -> uint64_t {
+        auto now = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    };
+
+    // Get initial time reference
+    uint64_t next_deadline_ns = get_now_ns() + block_ns;
 
     while (e->is_running.load(std::memory_order_acquire))
     {
@@ -175,10 +202,18 @@ static void audio_thread_main(AudioEngineImpl *e)
         }
 
         if (e->status_register)
-            e->status_register->graph_version++;
+            reinterpret_cast<std::atomic<uint32_t>*>(&e->status_register->graph_version)->fetch_add(1u, std::memory_order_release);
 
-        // Pace the thread so it doesn't spin at 100 % CPU
-        rt_platform::sleep_precise_ns(block_ns);
+        // ── Deadline-based pacing ────────────────────────────────
+        // Sleep only the remaining time until the next block deadline.
+        // If we're behind schedule (processing took longer than block_ns),
+        // skip the sleep and let the engine catch up.
+        uint64_t now_ns = get_now_ns();
+        if (now_ns < next_deadline_ns)
+        {
+            rt_platform::sleep_precise_ns(next_deadline_ns - now_ns);
+        }
+        next_deadline_ns += block_ns;
     }
 }
 
@@ -192,20 +227,20 @@ extern "C"
         const void *param_queue_buffer,
         uint32_t param_queue_capacity,
         const void *param_queue_head,
-        const void *param_queue_tail,
+        void *param_queue_tail,
         const void *midi_queue_buffer,
         uint32_t midi_queue_capacity,
         const void *midi_queue_head,
-        const void *midi_queue_tail,
+        void *midi_queue_tail,
         StatusRegister *status_register,
         float *output_ring_buffer,
         uint32_t output_ring_capacity,
         void *output_ring_head,
         const void *output_ring_tail)
     {
-        if (g_audio_engine)
+        if (!graph || !config)
         {
-            std::cerr << "[joduga] Engine already initialised\n";
+            std::cerr << "[joduga] null graph or config\n";
             return nullptr;
         }
 
@@ -243,10 +278,14 @@ extern "C"
             e->slot_connections.push_back({static_cast<uint32_t>(fit->second),
                                            static_cast<uint32_t>(tit->second),
                                            c.to_input_idx});
+        }
 
-            // Cache which slot feeds the output node
-            if (c.to_node_id == e->output_node_id)
-                e->output_feeder_slot = static_cast<int32_t>(fit->second);
+        // Cache the output node's own slot so we copy its processed scratch
+        // buffer to the ring (not the raw feeder).
+        {
+            auto oit = e->node_id_to_slot.find(e->output_node_id);
+            if (oit != e->node_id_to_slot.end())
+                e->output_feeder_slot = static_cast<int32_t>(oit->second);
         }
 
         // Allocate scratch buffers
@@ -258,14 +297,12 @@ extern "C"
         e->param_queue_buffer = param_queue_buffer;
         e->param_queue_capacity = param_queue_capacity;
         e->param_queue_head = static_cast<const std::atomic<size_t> *>(param_queue_head);
-        e->param_queue_tail = const_cast<std::atomic<size_t> *>(
-            static_cast<const std::atomic<size_t> *>(param_queue_tail));
+        e->param_queue_tail = static_cast<std::atomic<size_t> *>(param_queue_tail);
 
         e->midi_queue_buffer = midi_queue_buffer;
         e->midi_queue_capacity = midi_queue_capacity;
         e->midi_queue_head = static_cast<const std::atomic<size_t> *>(midi_queue_head);
-        e->midi_queue_tail = const_cast<std::atomic<size_t> *>(
-            static_cast<const std::atomic<size_t> *>(midi_queue_tail));
+        e->midi_queue_tail = static_cast<std::atomic<size_t> *>(midi_queue_tail);
 
         e->status_register = status_register;
 
@@ -278,8 +315,8 @@ extern "C"
                                   ? static_cast<const std::atomic<size_t> *>(output_ring_tail)
                                   : nullptr;
 
-        g_audio_engine = e.release();
-        return reinterpret_cast<AudioEngine *>(g_audio_engine);
+        auto *raw = e.release();
+        return reinterpret_cast<AudioEngine *>(raw);
     }
 
     int audio_engine_start(AudioEngine *engine_opaque)
@@ -311,7 +348,6 @@ extern "C"
         if (e->is_running.load(std::memory_order_acquire))
             audio_engine_stop(engine_opaque);
         delete e;
-        g_audio_engine = nullptr;
     }
 
     uint64_t audio_engine_get_sample_count(const AudioEngine *engine_opaque)

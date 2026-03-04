@@ -26,6 +26,8 @@ A high-performance, modular audio synthesizer built with **Rust**, **C++**, and 
 +------------------------v----------------------------------+
 |  C++ AUDIO ENGINE                                         |
 |  - SCHED_FIFO real-time thread (Linux)                    |
+|  - Mach time-constraint thread (macOS)                    |
+|  - THREAD_PRIORITY_TIME_CRITICAL (Windows)                |
 |  - Block-based DSP (256 samples/block)                    |
 |  - Cache-coherent node graph execution                    |
 |  - Zero-allocation audio callback                         |
@@ -40,10 +42,13 @@ A high-performance, modular audio synthesizer built with **Rust**, **C++**, and 
 - **Lock-free real-time audio** -- zero mutexes on the audio thread; SPSC ring buffers for all inter-thread communication.
 - **Live parameter tweaking** -- sliders update the C++ engine in real time via lock-free param queue. No dropouts.
 - **Graph validation** -- Rust validates topology, detects cycles, and computes execution order before handing off to C++.
+- **Node/edge deletion** -- `remove_node()` / `remove_edge()` with automatic cleanup of connected edges.
 - **cpal audio output** -- ring buffer written by C++ is consumed by a cpal stream for system audio playback.
 - **MIDI input** -- native MIDI via midir; events injected directly into the audio thread.
 - **67-node catalog** -- Oscillators, Filters, Dynamics, Effects, Modulators, Utility, Output.
 - **Zed-inspired UI** -- minimal dark theme, monospace typography, clean node design.
+- **Cross-platform** -- Linux (SCHED_FIFO), macOS (Mach time-constraint), Windows (THREAD_PRIORITY_TIME_CRITICAL).
+- **CI/CD** -- GitHub Actions matrix builds for all three platforms, automated releases on tag push, nightly builds.
 
 ---
 
@@ -67,7 +72,7 @@ joduga/
 |   +-- src/
 |       +-- audio_engine.cpp         # Core engine + audio loop
 |       +-- nodes/                   # Oscillator, Filter, Gain
-|       +-- platform/                # Linux/Windows RT threads
+|       +-- platform/                # Linux/macOS/Windows RT threads
 +-- tauri-ui/               # Tauri + React Flow frontend
     +-- src/
     |   +-- App.tsx                  # Main app layout
@@ -138,7 +143,9 @@ Minimal patch: **Sine Oscillator** -> **Speaker Output** -> click Play.
 
 ## Design Decisions
 
-**C++ owns the audio thread** -- SCHED_FIFO, CPU pinning, zero FFI during processing. The audio callback never crosses back into Rust.
+**C++ owns the audio thread** -- SCHED_FIFO (Linux), Mach time-constraint (macOS), THREAD_PRIORITY_TIME_CRITICAL (Windows). CPU pinning, zero FFI during processing. The audio callback never crosses back into Rust.
+
+**Static linking** -- the C++ engine is compiled as a static archive (`libjoduga_audio.a`) and linked directly into the Rust binary. No shared library deployment issues.
 
 **Lock-free queues** -- avoid priority inversion. The audio thread never blocks. Ring buffers are cache-coherent.
 
@@ -158,6 +165,26 @@ Minimal patch: **Sine Oscillator** -> **Speaker Output** -> click Play.
 | Output     | Final output (feeds ring buffer -> cpal -> DAC)  |
 
 The catalog includes 67 UI nodes mapped to these 4 engine types. Additional node types (reverb, delay, compressor, etc.) are represented in the UI but map to existing engine types with parameter-driven behaviour.
+
+---
+
+## Benchmarks
+
+Run the lock-free queue throughput benchmark:
+
+```bash
+cargo run --example bench_queue -p joduga --release
+```
+
+---
+
+## CI/CD
+
+- **CI:** Lint + format gate, cross-platform matrix build (Linux / macOS / Windows), tests, Tauri build, artifact upload.
+- **Release:** Tag a version (`v0.1.0`) to trigger automated release with platform-specific artifacts.
+- **Nightly:** Scheduled builds using nightly Rust toolchain at 03:00 UTC.
+
+See `.github/workflows/` for workflow definitions.
 
 ---
 

@@ -10,7 +10,6 @@
 ///   • Escape cancels in-progress connection
 ///   • Middle-mouse drag or Shift+drag to pan the canvas
 ///   • ▶ Start / ⏹ Stop to control audio engine
-
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
@@ -59,8 +58,13 @@ struct ParamDef {
 }
 
 fn pd(
-    name: &'static str, hash: u32, min: f32, max: f32, default: f32,
-    log: bool, suffix: &'static str,
+    name: &'static str,
+    hash: u32,
+    min: f32,
+    max: f32,
+    default: f32,
+    log: bool,
+    suffix: &'static str,
 ) -> ParamDef {
     ParamDef { name, hash, min, max, default, log, suffix }
 }
@@ -74,221 +78,900 @@ struct NodeTemplate {
     num_inputs: usize,
     num_outputs: usize,
     engine_type: NodeType,
+    subtype: i32,
     params: Vec<ParamDef>,
 }
 
 fn catalog() -> Vec<NodeTemplate> {
     use NodeType::*;
-    let t = |name, cat, icon, col, ni, no, et, ps: Vec<ParamDef>| NodeTemplate {
-        name, category: cat, icon, color: col,
-        num_inputs: ni, num_outputs: no, engine_type: et, params: ps,
+    let t = |name, cat, icon, col, ni, no, et, sub, ps: Vec<ParamDef>| NodeTemplate {
+        name,
+        category: cat,
+        icon,
+        color: col,
+        num_inputs: ni,
+        num_outputs: no,
+        engine_type: et,
+        subtype: sub,
+        params: ps,
     };
     vec![
         // ── Oscillators (14) ─────────────────────────────────────────
-        t("Sine Oscillator","Oscillators","🎵",C_OSC,0,1,Oscillator,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,440.0,true,"Hz")]),
-        t("Square Wave","Oscillators","⬜",C_OSC,0,1,Oscillator,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,440.0,true,"Hz"),
-               pd("Duty Cycle",0xA1,0.01,0.99,0.5,false,"")]),
-        t("Sawtooth Wave","Oscillators","📐",C_OSC,0,1,Oscillator,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,440.0,true,"Hz")]),
-        t("Triangle Wave","Oscillators","🔺",C_OSC,0,1,Oscillator,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,440.0,true,"Hz")]),
-        t("Pulse Wave","Oscillators","⚡",C_OSC,0,1,Oscillator,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,440.0,true,"Hz"),
-               pd("Width",0xA2,0.01,0.99,0.5,false,"")]),
-        t("White Noise","Oscillators","🌫",C_OSC,0,1,Oscillator,
-          vec![pd("Amplitude",H_FREQ,0.0,1.0,0.5,false,"")]),
-        t("Pink Noise","Oscillators","🩷",C_OSC,0,1,Oscillator,
-          vec![pd("Amplitude",H_FREQ,0.0,1.0,0.5,false,"")]),
-        t("Brown Noise","Oscillators","🟤",C_OSC,0,1,Oscillator,
-          vec![pd("Amplitude",H_FREQ,0.0,1.0,0.5,false,"")]),
-        t("FM Oscillator","Oscillators","📻",C_OSC,0,1,Oscillator,
-          vec![pd("Carrier",H_FREQ,20.0,20000.0,440.0,true,"Hz"),
-               pd("Mod Depth",0xA3,0.0,10.0,1.0,false,""),
-               pd("Mod Freq",0xA4,0.1,1000.0,5.0,true,"Hz")]),
-        t("AM Oscillator","Oscillators","📡",C_OSC,0,1,Oscillator,
-          vec![pd("Carrier",H_FREQ,20.0,20000.0,440.0,true,"Hz"),
-               pd("Mod Depth",0xA5,0.0,1.0,0.5,false,""),
-               pd("Mod Freq",0xA6,0.1,100.0,5.0,true,"Hz")]),
-        t("Wavetable","Oscillators","🌊",C_OSC,0,1,Oscillator,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,440.0,true,"Hz"),
-               pd("Position",0xA7,0.0,1.0,0.0,false,"")]),
-        t("Sub Oscillator","Oscillators","🔉",C_OSC,0,1,Oscillator,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,110.0,true,"Hz"),
-               pd("Octave",0xA8,-3.0,0.0,-1.0,false,"")]),
-        t("Super Saw","Oscillators","🪚",C_OSC,0,1,Oscillator,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,440.0,true,"Hz"),
-               pd("Detune",0xA9,0.0,1.0,0.3,false,""),
-               pd("Voices",0xAA,1.0,7.0,5.0,false,"")]),
-        t("Additive Synth","Oscillators","➕",C_OSC,0,1,Oscillator,
-          vec![pd("Fundamental",H_FREQ,20.0,5000.0,220.0,true,"Hz"),
-               pd("Harmonics",0xAB,1.0,32.0,8.0,false,""),
-               pd("Rolloff",0xAC,0.1,2.0,1.0,false,"")]),
-
+        // WAVEFORM_TYPE (0xAD): SINE=0, SQUARE=1, SAW=2, TRIANGLE=3,
+        //   WHITE_NOISE=4, PINK_NOISE=5, BROWN_NOISE=6, FM=7, AM=8,
+        //   WAVETABLE=9, SUB=10, SUPER_SAW=11, ADDITIVE=12
+        t(
+            "Sine Oscillator",
+            "Oscillators",
+            "🎵",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            0,
+            vec![pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz")],
+        ),
+        t(
+            "Square Wave",
+            "Oscillators",
+            "⬜",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            1,
+            vec![
+                pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
+                pd("Duty Cycle", 0xA1, 0.01, 0.99, 0.5, false, ""),
+            ],
+        ),
+        t(
+            "Sawtooth Wave",
+            "Oscillators",
+            "📐",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            2,
+            vec![pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz")],
+        ),
+        t(
+            "Triangle Wave",
+            "Oscillators",
+            "🔺",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            3,
+            vec![pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz")],
+        ),
+        t(
+            "Pulse Wave",
+            "Oscillators",
+            "⚡",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            1,
+            vec![
+                pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
+                pd("Width", 0xA2, 0.01, 0.99, 0.5, false, ""),
+            ],
+        ),
+        t(
+            "White Noise",
+            "Oscillators",
+            "🌫",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            4,
+            vec![pd("Amplitude", H_FREQ, 0.0, 1.0, 0.5, false, "")],
+        ),
+        t(
+            "Pink Noise",
+            "Oscillators",
+            "🩷",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            5,
+            vec![pd("Amplitude", H_FREQ, 0.0, 1.0, 0.5, false, "")],
+        ),
+        t(
+            "Brown Noise",
+            "Oscillators",
+            "🟤",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            6,
+            vec![pd("Amplitude", H_FREQ, 0.0, 1.0, 0.5, false, "")],
+        ),
+        t(
+            "FM Oscillator",
+            "Oscillators",
+            "📻",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            7,
+            vec![
+                pd("Carrier", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
+                pd("Mod Depth", 0xA3, 0.0, 10.0, 1.0, false, ""),
+                pd("Mod Freq", 0xA4, 0.1, 1000.0, 5.0, true, "Hz"),
+            ],
+        ),
+        t(
+            "AM Oscillator",
+            "Oscillators",
+            "📡",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            8,
+            vec![
+                pd("Carrier", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
+                pd("Mod Depth", 0xA5, 0.0, 1.0, 0.5, false, ""),
+                pd("Mod Freq", 0xA6, 0.1, 100.0, 5.0, true, "Hz"),
+            ],
+        ),
+        t(
+            "Wavetable",
+            "Oscillators",
+            "🌊",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            9,
+            vec![
+                pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
+                pd("Position", 0xA7, 0.0, 1.0, 0.0, false, ""),
+            ],
+        ),
+        t(
+            "Sub Oscillator",
+            "Oscillators",
+            "🔉",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            10,
+            vec![
+                pd("Frequency", H_FREQ, 20.0, 20000.0, 110.0, true, "Hz"),
+                pd("Octave", 0xA8, -3.0, 0.0, -1.0, false, ""),
+            ],
+        ),
+        t(
+            "Super Saw",
+            "Oscillators",
+            "🪚",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            11,
+            vec![
+                pd("Frequency", H_FREQ, 20.0, 20000.0, 440.0, true, "Hz"),
+                pd("Detune", 0xA9, 0.0, 1.0, 0.3, false, ""),
+                pd("Voices", 0xAA, 1.0, 7.0, 5.0, false, ""),
+            ],
+        ),
+        t(
+            "Additive Synth",
+            "Oscillators",
+            "➕",
+            C_OSC,
+            0,
+            1,
+            Oscillator,
+            12,
+            vec![
+                pd("Fundamental", H_FREQ, 20.0, 5000.0, 220.0, true, "Hz"),
+                pd("Harmonics", 0xAB, 1.0, 32.0, 8.0, false, ""),
+                pd("Rolloff", 0xAC, 0.1, 2.0, 1.0, false, ""),
+            ],
+        ),
         // ── Filters (18) ────────────────────────────────────────────
-        t("Low-Pass Filter","Filters","⬇",C_FLT,1,1,Filter,
-          vec![pd("Cutoff",H_FREQ,20.0,20000.0,5000.0,true,"Hz"),
-               pd("Resonance",H_RES,0.1,12.0,0.707,false,"")]),
-        t("High-Pass Filter","Filters","⬆",C_FLT,1,1,Filter,
-          vec![pd("Cutoff",H_FREQ,20.0,20000.0,200.0,true,"Hz"),
-               pd("Resonance",H_RES,0.1,12.0,0.707,false,"")]),
-        t("Band-Pass Filter","Filters","↔",C_FLT,1,1,Filter,
-          vec![pd("Center",H_FREQ,20.0,20000.0,1000.0,true,"Hz"),
-               pd("Bandwidth",H_RES,0.1,12.0,1.0,false,"")]),
-        t("Notch Filter","Filters","🚫",C_FLT,1,1,Filter,
-          vec![pd("Center",H_FREQ,20.0,20000.0,1000.0,true,"Hz"),
-               pd("Width",H_RES,0.1,12.0,1.0,false,"")]),
-        t("All-Pass Filter","Filters","🔄",C_FLT,1,1,Filter,
-          vec![pd("Cutoff",H_FREQ,20.0,20000.0,1000.0,true,"Hz")]),
-        t("Comb Filter","Filters","🪮",C_FLT,1,1,Filter,
-          vec![pd("Delay",0xB1,0.1,50.0,5.0,false,"ms"),
-               pd("Feedback",0xB2,0.0,0.99,0.7,false,"")]),
-        t("Formant Filter","Filters","🗣",C_FLT,1,1,Filter,
-          vec![pd("Vowel",0xB3,0.0,4.0,0.0,false,""),
-               pd("Shift",0xB4,-12.0,12.0,0.0,false,"st")]),
-        t("Moog Ladder","Filters","🎛",C_FLT,1,1,Filter,
-          vec![pd("Cutoff",H_FREQ,20.0,20000.0,2000.0,true,"Hz"),
-               pd("Resonance",H_RES,0.0,4.0,1.0,false,""),
-               pd("Drive",0xB5,0.0,5.0,0.0,false,"")]),
-        t("State Variable","Filters","🔀",C_FLT,1,1,Filter,
-          vec![pd("Cutoff",H_FREQ,20.0,20000.0,3000.0,true,"Hz"),
-               pd("Resonance",H_RES,0.1,10.0,0.707,false,""),
-               pd("Mix LP/HP",0xB6,0.0,1.0,0.0,false,"")]),
-        t("Parametric EQ","Filters","📊",C_FLT,1,1,Filter,
-          vec![pd("Frequency",H_FREQ,20.0,20000.0,1000.0,true,"Hz"),
-               pd("Gain dB",H_RES,-18.0,18.0,0.0,false,"dB"),
-               pd("Q",0xB7,0.1,20.0,1.0,false,"")]),
-        t("Low Shelf EQ","Filters","📉",C_FLT,1,1,Filter,
-          vec![pd("Frequency",H_FREQ,20.0,5000.0,200.0,true,"Hz"),
-               pd("Gain dB",H_RES,-18.0,18.0,0.0,false,"dB")]),
-        t("High Shelf EQ","Filters","📈",C_FLT,1,1,Filter,
-          vec![pd("Frequency",H_FREQ,1000.0,20000.0,8000.0,true,"Hz"),
-               pd("Gain dB",H_RES,-18.0,18.0,0.0,false,"dB")]),
-        t("Tilt EQ","Filters","↗",C_FLT,1,1,Filter,
-          vec![pd("Tilt dB",H_FREQ,-6.0,6.0,0.0,false,"dB"),
-               pd("Center",H_RES,200.0,5000.0,1000.0,true,"Hz")]),
-        t("DC Blocker","Filters","🚿",C_FLT,1,1,Filter,
-          vec![pd("Cutoff",H_FREQ,5.0,80.0,20.0,false,"Hz")]),
-        t("Moving Average","Filters","📏",C_FLT,1,1,Filter,
-          vec![pd("Window",0xB8,1.0,128.0,8.0,false,"samp")]),
-        t("Crossover","Filters","✂",C_FLT,1,2,Filter,
-          vec![pd("Frequency",H_FREQ,100.0,10000.0,1000.0,true,"Hz"),
-               pd("Order",0xB9,1.0,4.0,2.0,false,"")]),
-        t("Resonator","Filters","🔔",C_FLT,1,1,Filter,
-          vec![pd("Frequency",H_FREQ,50.0,10000.0,500.0,true,"Hz"),
-               pd("Decay",H_RES,0.01,5.0,0.5,true,"s")]),
-        t("Vowel Filter","Filters","🅰",C_FLT,1,1,Filter,
-          vec![pd("Vowel",0xBA,0.0,4.0,0.0,false,""),
-               pd("Q",H_RES,0.5,10.0,2.0,false,"")]),
-
+        // FILTER_MODE (0xBD): LP=0, HP=1, BP=2, NOTCH=3, AP=4, COMB=5,
+        //   FORMANT=6, MOOG=7, SVF=8, PEAK_EQ=9, LOW_SHELF=10,
+        //   HIGH_SHELF=11, TILT=12, DC_BLOCK=13, MOVING_AVG=14,
+        //   CROSSOVER=15, RESONATOR=16, VOWEL=17
+        t(
+            "Low-Pass Filter",
+            "Filters",
+            "⬇",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            0,
+            vec![
+                pd("Cutoff", H_FREQ, 20.0, 20000.0, 5000.0, true, "Hz"),
+                pd("Resonance", H_RES, 0.1, 12.0, 0.707, false, ""),
+            ],
+        ),
+        t(
+            "High-Pass Filter",
+            "Filters",
+            "⬆",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            1,
+            vec![
+                pd("Cutoff", H_FREQ, 20.0, 20000.0, 200.0, true, "Hz"),
+                pd("Resonance", H_RES, 0.1, 12.0, 0.707, false, ""),
+            ],
+        ),
+        t(
+            "Band-Pass Filter",
+            "Filters",
+            "↔",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            2,
+            vec![
+                pd("Center", H_FREQ, 20.0, 20000.0, 1000.0, true, "Hz"),
+                pd("Bandwidth", H_RES, 0.1, 12.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "Notch Filter",
+            "Filters",
+            "🚫",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            3,
+            vec![
+                pd("Center", H_FREQ, 20.0, 20000.0, 1000.0, true, "Hz"),
+                pd("Width", H_RES, 0.1, 12.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "All-Pass Filter",
+            "Filters",
+            "🔄",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            4,
+            vec![pd("Cutoff", H_FREQ, 20.0, 20000.0, 1000.0, true, "Hz")],
+        ),
+        t(
+            "Comb Filter",
+            "Filters",
+            "🪮",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            5,
+            vec![
+                pd("Delay", 0xB1, 0.1, 50.0, 5.0, false, "ms"),
+                pd("Feedback", 0xB2, 0.0, 0.99, 0.7, false, ""),
+            ],
+        ),
+        t(
+            "Formant Filter",
+            "Filters",
+            "🗣",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            6,
+            vec![
+                pd("Vowel", 0xB3, 0.0, 4.0, 0.0, false, ""),
+                pd("Shift", 0xB4, -12.0, 12.0, 0.0, false, "st"),
+            ],
+        ),
+        t(
+            "Moog Ladder",
+            "Filters",
+            "🎛",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            7,
+            vec![
+                pd("Cutoff", H_FREQ, 20.0, 20000.0, 2000.0, true, "Hz"),
+                pd("Resonance", H_RES, 0.0, 4.0, 1.0, false, ""),
+                pd("Drive", 0xB5, 0.0, 5.0, 0.0, false, ""),
+            ],
+        ),
+        t(
+            "State Variable",
+            "Filters",
+            "🔀",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            8,
+            vec![
+                pd("Cutoff", H_FREQ, 20.0, 20000.0, 3000.0, true, "Hz"),
+                pd("Resonance", H_RES, 0.1, 10.0, 0.707, false, ""),
+                pd("Mix LP/HP", 0xB6, 0.0, 1.0, 0.0, false, ""),
+            ],
+        ),
+        t(
+            "Parametric EQ",
+            "Filters",
+            "📊",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            9,
+            vec![
+                pd("Frequency", H_FREQ, 20.0, 20000.0, 1000.0, true, "Hz"),
+                pd("Gain dB", H_RES, -18.0, 18.0, 0.0, false, "dB"),
+                pd("Q", 0xB7, 0.1, 20.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "Low Shelf EQ",
+            "Filters",
+            "📉",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            10,
+            vec![
+                pd("Frequency", H_FREQ, 20.0, 5000.0, 200.0, true, "Hz"),
+                pd("Gain dB", H_RES, -18.0, 18.0, 0.0, false, "dB"),
+            ],
+        ),
+        t(
+            "High Shelf EQ",
+            "Filters",
+            "📈",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            11,
+            vec![
+                pd("Frequency", H_FREQ, 1000.0, 20000.0, 8000.0, true, "Hz"),
+                pd("Gain dB", H_RES, -18.0, 18.0, 0.0, false, "dB"),
+            ],
+        ),
+        t(
+            "Tilt EQ",
+            "Filters",
+            "↗",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            12,
+            vec![
+                pd("Tilt dB", H_FREQ, -6.0, 6.0, 0.0, false, "dB"),
+                pd("Center", H_RES, 200.0, 5000.0, 1000.0, true, "Hz"),
+            ],
+        ),
+        t(
+            "DC Blocker",
+            "Filters",
+            "🚿",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            13,
+            vec![pd("Cutoff", H_FREQ, 5.0, 80.0, 20.0, false, "Hz")],
+        ),
+        t(
+            "Moving Average",
+            "Filters",
+            "📏",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            14,
+            vec![pd("Window", 0xB8, 1.0, 128.0, 8.0, false, "samp")],
+        ),
+        t(
+            "Crossover",
+            "Filters",
+            "✂",
+            C_FLT,
+            1,
+            2,
+            Filter,
+            15,
+            vec![
+                pd("Frequency", H_FREQ, 100.0, 10000.0, 1000.0, true, "Hz"),
+                pd("Order", 0xB9, 1.0, 4.0, 2.0, false, ""),
+            ],
+        ),
+        t(
+            "Resonator",
+            "Filters",
+            "🔔",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            16,
+            vec![
+                pd("Frequency", H_FREQ, 50.0, 10000.0, 500.0, true, "Hz"),
+                pd("Decay", H_RES, 0.01, 5.0, 0.5, true, "s"),
+            ],
+        ),
+        t(
+            "Vowel Filter",
+            "Filters",
+            "🅰",
+            C_FLT,
+            1,
+            1,
+            Filter,
+            17,
+            vec![
+                pd("Vowel", 0xBA, 0.0, 4.0, 0.0, false, ""),
+                pd("Q", H_RES, 0.5, 10.0, 2.0, false, ""),
+            ],
+        ),
         // ── Dynamics (7) ────────────────────────────────────────────
-        t("Gain","Dynamics","🔊",C_DYN,1,1,Gain,
-          vec![pd("Level",H_FREQ,0.0,2.0,1.0,false,"")]),
-        t("Attenuator","Dynamics","🔉",C_DYN,1,1,Gain,
-          vec![pd("Amount",H_FREQ,0.0,1.0,0.5,false,"")]),
-        t("VCA","Dynamics","🎚",C_DYN,1,1,Gain,
-          vec![pd("Level",H_FREQ,0.0,2.0,1.0,false,"")]),
-        t("Compressor","Dynamics","🗜",C_DYN,1,1,Gain,
-          vec![pd("Threshold",H_FREQ,-60.0,0.0,-20.0,false,"dB"),
-               pd("Ratio",0xC1,1.0,20.0,4.0,false,":1"),
-               pd("Attack",0xC2,0.1,100.0,10.0,true,"ms"),
-               pd("Release",0xC3,10.0,1000.0,100.0,true,"ms")]),
-        t("Limiter","Dynamics","🛑",C_DYN,1,1,Gain,
-          vec![pd("Threshold",H_FREQ,-20.0,0.0,-3.0,false,"dB"),
-               pd("Release",0xC4,10.0,500.0,50.0,true,"ms")]),
-        t("Gate","Dynamics","🚧",C_DYN,1,1,Gain,
-          vec![pd("Threshold",H_FREQ,-80.0,0.0,-40.0,false,"dB"),
-               pd("Attack",0xC5,0.1,50.0,1.0,true,"ms"),
-               pd("Release",0xC6,10.0,500.0,50.0,true,"ms")]),
-        t("Expander","Dynamics","↕",C_DYN,1,1,Gain,
-          vec![pd("Threshold",H_FREQ,-60.0,0.0,-30.0,false,"dB"),
-               pd("Ratio",0xC7,1.0,10.0,2.0,false,":1")]),
-
+        // GAIN_MODE (0xCF): SIMPLE_GAIN=0, COMPRESSOR=1, LIMITER=2,
+        //   GATE=3, EXPANDER=4
+        t(
+            "Gain",
+            "Dynamics",
+            "🔊",
+            C_DYN,
+            1,
+            1,
+            Gain,
+            0,
+            vec![pd("Level", H_FREQ, 0.0, 2.0, 1.0, false, "")],
+        ),
+        t(
+            "Attenuator",
+            "Dynamics",
+            "🔉",
+            C_DYN,
+            1,
+            1,
+            Gain,
+            0,
+            vec![pd("Amount", H_FREQ, 0.0, 1.0, 0.5, false, "")],
+        ),
+        t(
+            "VCA",
+            "Dynamics",
+            "🎚",
+            C_DYN,
+            1,
+            1,
+            Gain,
+            0,
+            vec![pd("Level", H_FREQ, 0.0, 2.0, 1.0, false, "")],
+        ),
+        t(
+            "Compressor",
+            "Dynamics",
+            "🗜",
+            C_DYN,
+            1,
+            1,
+            Gain,
+            1,
+            vec![
+                pd("Threshold", 0xC0, -60.0, 0.0, -20.0, false, "dB"),
+                pd("Ratio", 0xC1, 1.0, 20.0, 4.0, false, ":1"),
+                pd("Attack", 0xC2, 0.1, 100.0, 10.0, true, "ms"),
+                pd("Release", 0xC3, 10.0, 1000.0, 100.0, true, "ms"),
+            ],
+        ),
+        t(
+            "Limiter",
+            "Dynamics",
+            "🛑",
+            C_DYN,
+            1,
+            1,
+            Gain,
+            2,
+            vec![
+                pd("Threshold", 0xC0, -20.0, 0.0, -3.0, false, "dB"),
+                pd("Release", 0xC3, 10.0, 500.0, 50.0, true, "ms"),
+            ],
+        ),
+        t(
+            "Gate",
+            "Dynamics",
+            "🚧",
+            C_DYN,
+            1,
+            1,
+            Gain,
+            3,
+            vec![
+                pd("Threshold", 0xC0, -80.0, 0.0, -40.0, false, "dB"),
+                pd("Attack", 0xC2, 0.1, 50.0, 1.0, true, "ms"),
+                pd("Release", 0xC3, 10.0, 500.0, 50.0, true, "ms"),
+            ],
+        ),
+        t(
+            "Expander",
+            "Dynamics",
+            "↕",
+            C_DYN,
+            1,
+            1,
+            Gain,
+            4,
+            vec![
+                pd("Threshold", 0xC0, -60.0, 0.0, -30.0, false, "dB"),
+                pd("Ratio", 0xC1, 1.0, 10.0, 2.0, false, ":1"),
+            ],
+        ),
         // ── Effects (14) ────────────────────────────────────────────
-        t("Delay","Effects","⏱",C_FX,1,1,Filter,
-          vec![pd("Time",0xD1,1.0,2000.0,250.0,true,"ms"),
-               pd("Feedback",0xD2,0.0,0.99,0.5,false,""),
-               pd("Mix",0xD3,0.0,1.0,0.5,false,"")]),
-        t("Reverb","Effects","🏛",C_FX,1,1,Filter,
-          vec![pd("Size",0xD4,0.0,1.0,0.6,false,""),
-               pd("Damping",0xD5,0.0,1.0,0.5,false,""),
-               pd("Mix",0xD6,0.0,1.0,0.3,false,"")]),
-        t("Chorus","Effects","🎭",C_FX,1,1,Filter,
-          vec![pd("Rate",0xD7,0.1,10.0,1.0,false,"Hz"),
-               pd("Depth",0xD8,0.0,1.0,0.5,false,""),
-               pd("Mix",0xD9,0.0,1.0,0.5,false,"")]),
-        t("Flanger","Effects","✈",C_FX,1,1,Filter,
-          vec![pd("Rate",0xDA,0.05,5.0,0.5,false,"Hz"),
-               pd("Depth",0xDB,0.0,1.0,0.7,false,""),
-               pd("Feedback",0xDC,0.0,0.99,0.7,false,"")]),
-        t("Phaser","Effects","🌀",C_FX,1,1,Filter,
-          vec![pd("Rate",0xDD,0.05,5.0,0.3,false,"Hz"),
-               pd("Depth",0xDE,0.0,1.0,0.6,false,""),
-               pd("Stages",0xDF,2.0,12.0,4.0,false,"")]),
-        t("Distortion","Effects","🔥",C_FX,1,1,Gain,
-          vec![pd("Drive",0xE1,0.0,10.0,3.0,false,""),
-               pd("Tone",0xE2,0.0,1.0,0.5,false,""),
-               pd("Mix",0xE3,0.0,1.0,1.0,false,"")]),
-        t("Overdrive","Effects","🎸",C_FX,1,1,Gain,
-          vec![pd("Drive",0xE4,0.0,10.0,2.0,false,""),
-               pd("Tone",0xE5,0.0,1.0,0.6,false,"")]),
-        t("Bitcrusher","Effects","👾",C_FX,1,1,Gain,
-          vec![pd("Bits",0xE6,1.0,16.0,8.0,false,""),
-               pd("Downsample",0xE7,1.0,64.0,1.0,false,"x")]),
-        t("Ring Modulator","Effects","💍",C_FX,1,1,Gain,
-          vec![pd("Frequency",0xE8,1.0,5000.0,200.0,true,"Hz"),
-               pd("Mix",0xE9,0.0,1.0,0.5,false,"")]),
-        t("Tremolo","Effects","〰",C_FX,1,1,Gain,
-          vec![pd("Rate",0xEA,0.1,20.0,5.0,false,"Hz"),
-               pd("Depth",0xEB,0.0,1.0,0.5,false,"")]),
-        t("Vibrato","Effects","🎻",C_FX,1,1,Filter,
-          vec![pd("Rate",0xEC,0.1,20.0,5.0,false,"Hz"),
-               pd("Depth",0xED,0.0,1.0,0.3,false,"")]),
-        t("Waveshaper","Effects","📈",C_FX,1,1,Gain,
-          vec![pd("Amount",0xEE,0.0,10.0,1.0,false,""),
-               pd("Symmetry",0xEF,-1.0,1.0,0.0,false,"")]),
-        t("Pitch Shifter","Effects","🎼",C_FX,1,1,Filter,
-          vec![pd("Semitones",0xF0,-24.0,24.0,0.0,false,"st"),
-               pd("Mix",0xF1,0.0,1.0,1.0,false,"")]),
-        t("Stereo Widener","Effects","↔",C_FX,1,1,Gain,
-          vec![pd("Width",0xF2,0.0,2.0,1.0,false,"")]),
-
+        // Delay-based → NODE_TYPE_DELAY, DELAY_MODE (0xCD):
+        //   SIMPLE_DELAY=0, REVERB=1, CHORUS=2, FLANGER=3,
+        //   PHASER=4, VIBRATO=5, PITCH_SHIFT=6
+        // Processing → NODE_TYPE_EFFECTS, EFFECTS_MODE (0xCE):
+        //   DISTORTION=0, OVERDRIVE=1, BITCRUSHER=2, RING_MOD=3,
+        //   WAVESHAPER=4, TREMOLO=5, STEREO_WIDENER=6
+        t(
+            "Delay",
+            "Effects",
+            "⏱",
+            C_FX,
+            1,
+            1,
+            Delay,
+            0,
+            vec![
+                pd("Time", 0xD1, 1.0, 2000.0, 250.0, true, "ms"),
+                pd("Feedback", 0xD2, 0.0, 0.99, 0.5, false, ""),
+                pd("Mix", 0xD3, 0.0, 1.0, 0.5, false, ""),
+            ],
+        ),
+        t(
+            "Reverb",
+            "Effects",
+            "🏛",
+            C_FX,
+            1,
+            1,
+            Delay,
+            1,
+            vec![
+                pd("Size", 0xD4, 0.0, 1.0, 0.6, false, ""),
+                pd("Damping", 0xD5, 0.0, 1.0, 0.5, false, ""),
+                pd("Mix", 0xD6, 0.0, 1.0, 0.3, false, ""),
+            ],
+        ),
+        t(
+            "Chorus",
+            "Effects",
+            "🎭",
+            C_FX,
+            1,
+            1,
+            Delay,
+            2,
+            vec![
+                pd("Rate", 0xD7, 0.1, 10.0, 1.0, false, "Hz"),
+                pd("Depth", 0xD8, 0.0, 1.0, 0.5, false, ""),
+                pd("Mix", 0xD9, 0.0, 1.0, 0.5, false, ""),
+            ],
+        ),
+        t(
+            "Flanger",
+            "Effects",
+            "✈",
+            C_FX,
+            1,
+            1,
+            Delay,
+            3,
+            vec![
+                pd("Rate", 0xDA, 0.05, 5.0, 0.5, false, "Hz"),
+                pd("Depth", 0xDB, 0.0, 1.0, 0.7, false, ""),
+                pd("Feedback", 0xDC, 0.0, 0.99, 0.7, false, ""),
+            ],
+        ),
+        t(
+            "Phaser",
+            "Effects",
+            "🌀",
+            C_FX,
+            1,
+            1,
+            Delay,
+            4,
+            vec![
+                pd("Rate", 0xDD, 0.05, 5.0, 0.3, false, "Hz"),
+                pd("Depth", 0xDE, 0.0, 1.0, 0.6, false, ""),
+                pd("Stages", 0xDF, 2.0, 12.0, 4.0, false, ""),
+            ],
+        ),
+        t(
+            "Distortion",
+            "Effects",
+            "🔥",
+            C_FX,
+            1,
+            1,
+            Effects,
+            0,
+            vec![
+                pd("Drive", 0xE1, 0.0, 10.0, 3.0, false, ""),
+                pd("Tone", 0xE2, 0.0, 1.0, 0.5, false, ""),
+                pd("Mix", 0xE3, 0.0, 1.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "Overdrive",
+            "Effects",
+            "🎸",
+            C_FX,
+            1,
+            1,
+            Effects,
+            1,
+            vec![
+                pd("Drive", 0xE4, 0.0, 10.0, 2.0, false, ""),
+                pd("Tone", 0xE5, 0.0, 1.0, 0.6, false, ""),
+            ],
+        ),
+        t(
+            "Bitcrusher",
+            "Effects",
+            "👾",
+            C_FX,
+            1,
+            1,
+            Effects,
+            2,
+            vec![
+                pd("Bits", 0xE6, 1.0, 16.0, 8.0, false, ""),
+                pd("Downsample", 0xE7, 1.0, 64.0, 1.0, false, "x"),
+            ],
+        ),
+        t(
+            "Ring Modulator",
+            "Effects",
+            "💍",
+            C_FX,
+            1,
+            1,
+            Effects,
+            3,
+            vec![
+                pd("Frequency", 0xE8, 1.0, 5000.0, 200.0, true, "Hz"),
+                pd("Mix", 0xE9, 0.0, 1.0, 0.5, false, ""),
+            ],
+        ),
+        t(
+            "Tremolo",
+            "Effects",
+            "〰",
+            C_FX,
+            1,
+            1,
+            Effects,
+            5,
+            vec![
+                pd("Rate", 0xEA, 0.1, 20.0, 5.0, false, "Hz"),
+                pd("Depth", 0xEB, 0.0, 1.0, 0.5, false, ""),
+            ],
+        ),
+        t(
+            "Vibrato",
+            "Effects",
+            "🎻",
+            C_FX,
+            1,
+            1,
+            Delay,
+            5,
+            vec![
+                pd("Rate", 0xEC, 0.1, 20.0, 5.0, false, "Hz"),
+                pd("Depth", 0xED, 0.0, 1.0, 0.3, false, ""),
+            ],
+        ),
+        t(
+            "Waveshaper",
+            "Effects",
+            "📈",
+            C_FX,
+            1,
+            1,
+            Effects,
+            4,
+            vec![
+                pd("Amount", 0xEE, 0.0, 10.0, 1.0, false, ""),
+                pd("Symmetry", 0xEF, -1.0, 1.0, 0.0, false, ""),
+            ],
+        ),
+        t(
+            "Pitch Shifter",
+            "Effects",
+            "🎼",
+            C_FX,
+            1,
+            1,
+            Delay,
+            6,
+            vec![
+                pd("Semitones", 0xF0, -24.0, 24.0, 0.0, false, "st"),
+                pd("Mix", 0xF1, 0.0, 1.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "Stereo Widener",
+            "Effects",
+            "↔",
+            C_FX,
+            1,
+            1,
+            Effects,
+            6,
+            vec![pd("Width", 0xF2, 0.0, 2.0, 1.0, false, "")],
+        ),
         // ── Modulators (6) ──────────────────────────────────────────
-        t("LFO Sine","Modulators","🔄",C_MOD,0,1,Oscillator,
-          vec![pd("Rate",H_FREQ,0.01,50.0,1.0,true,"Hz"),
-               pd("Depth",0x10,0.0,1.0,1.0,false,"")]),
-        t("LFO Square","Modulators","⬛",C_MOD,0,1,Oscillator,
-          vec![pd("Rate",H_FREQ,0.01,50.0,1.0,true,"Hz"),
-               pd("Depth",0x11,0.0,1.0,1.0,false,"")]),
-        t("LFO Triangle","Modulators","🔺",C_MOD,0,1,Oscillator,
-          vec![pd("Rate",H_FREQ,0.01,50.0,1.0,true,"Hz"),
-               pd("Depth",0x12,0.0,1.0,1.0,false,"")]),
-        t("LFO Sample & Hold","Modulators","🎲",C_MOD,0,1,Oscillator,
-          vec![pd("Rate",H_FREQ,0.01,50.0,2.0,true,"Hz"),
-               pd("Depth",0x13,0.0,1.0,1.0,false,"")]),
-        t("ADSR Envelope","Modulators","📉",C_MOD,0,1,Oscillator,
-          vec![pd("Attack",0x14,0.001,5.0,0.01,true,"s"),
-               pd("Decay",0x15,0.001,5.0,0.1,true,"s"),
-               pd("Sustain",0x16,0.0,1.0,0.7,false,""),
-               pd("Release",0x17,0.001,10.0,0.3,true,"s")]),
-        t("AR Envelope","Modulators","📈",C_MOD,0,1,Oscillator,
-          vec![pd("Attack",0x18,0.001,5.0,0.01,true,"s"),
-               pd("Release",0x19,0.001,10.0,0.3,true,"s")]),
-
+        t(
+            "LFO Sine",
+            "Modulators",
+            "🔄",
+            C_MOD,
+            0,
+            1,
+            Oscillator,
+            0,
+            vec![
+                pd("Rate", H_FREQ, 0.01, 50.0, 1.0, true, "Hz"),
+                pd("Depth", 0x10, 0.0, 1.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "LFO Square",
+            "Modulators",
+            "⬛",
+            C_MOD,
+            0,
+            1,
+            Oscillator,
+            1,
+            vec![
+                pd("Rate", H_FREQ, 0.01, 50.0, 1.0, true, "Hz"),
+                pd("Depth", 0x11, 0.0, 1.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "LFO Triangle",
+            "Modulators",
+            "🔺",
+            C_MOD,
+            0,
+            1,
+            Oscillator,
+            3,
+            vec![
+                pd("Rate", H_FREQ, 0.01, 50.0, 1.0, true, "Hz"),
+                pd("Depth", 0x12, 0.0, 1.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "LFO Sample & Hold",
+            "Modulators",
+            "🎲",
+            C_MOD,
+            0,
+            1,
+            Oscillator,
+            4,
+            vec![
+                pd("Rate", H_FREQ, 0.01, 50.0, 2.0, true, "Hz"),
+                pd("Depth", 0x13, 0.0, 1.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "ADSR Envelope",
+            "Modulators",
+            "📉",
+            C_MOD,
+            0,
+            1,
+            Oscillator,
+            0,
+            vec![
+                pd("Attack", 0x14, 0.001, 5.0, 0.01, true, "s"),
+                pd("Decay", 0x15, 0.001, 5.0, 0.1, true, "s"),
+                pd("Sustain", 0x16, 0.0, 1.0, 0.7, false, ""),
+                pd("Release", 0x17, 0.001, 10.0, 0.3, true, "s"),
+            ],
+        ),
+        t(
+            "AR Envelope",
+            "Modulators",
+            "📈",
+            C_MOD,
+            0,
+            1,
+            Oscillator,
+            0,
+            vec![
+                pd("Attack", 0x18, 0.001, 5.0, 0.01, true, "s"),
+                pd("Release", 0x19, 0.001, 10.0, 0.3, true, "s"),
+            ],
+        ),
         // ── Utility (7) ─────────────────────────────────────────────
-        t("Mixer 2-Ch","Utility","🎛",C_UTL,2,1,Gain,
-          vec![pd("Ch A",0x20,0.0,2.0,1.0,false,""),
-               pd("Ch B",0x21,0.0,2.0,1.0,false,"")]),
-        t("Crossfade","Utility","🔀",C_UTL,2,1,Gain,
-          vec![pd("Mix",0x22,0.0,1.0,0.5,false,"")]),
-        t("Constant","Utility","🔢",C_UTL,0,1,Oscillator,
-          vec![pd("Value",H_FREQ,0.0,10.0,1.0,false,"")]),
-        t("DC Offset","Utility","➡",C_UTL,1,1,Gain,
-          vec![pd("Offset",0x23,-1.0,1.0,0.0,false,"")]),
-        t("Inverter","Utility","🔃",C_UTL,1,1,Gain, vec![]),
-        t("Splitter","Utility","🔱",C_UTL,1,2,Gain, vec![]),
-        t("Speaker Output","Output","🎧",C_OUT,1,0,Output, vec![]),
+        t(
+            "Mixer 2-Ch",
+            "Utility",
+            "🎛",
+            C_UTL,
+            2,
+            1,
+            Gain,
+            0,
+            vec![
+                pd("Ch A", 0x20, 0.0, 2.0, 1.0, false, ""),
+                pd("Ch B", 0x21, 0.0, 2.0, 1.0, false, ""),
+            ],
+        ),
+        t(
+            "Crossfade",
+            "Utility",
+            "🔀",
+            C_UTL,
+            2,
+            1,
+            Gain,
+            0,
+            vec![pd("Mix", 0x22, 0.0, 1.0, 0.5, false, "")],
+        ),
+        t(
+            "Constant",
+            "Utility",
+            "🔢",
+            C_UTL,
+            0,
+            1,
+            Oscillator,
+            0,
+            vec![pd("Value", H_FREQ, 0.0, 10.0, 1.0, false, "")],
+        ),
+        t(
+            "DC Offset",
+            "Utility",
+            "➡",
+            C_UTL,
+            1,
+            1,
+            Gain,
+            0,
+            vec![pd("Offset", 0x23, -1.0, 1.0, 0.0, false, "")],
+        ),
+        t("Inverter", "Utility", "🔃", C_UTL, 1, 1, Gain, 0, vec![]),
+        t("Splitter", "Utility", "🔱", C_UTL, 1, 2, Gain, 0, vec![]),
+        t("Speaker Output", "Output", "🎧", C_OUT, 1, 0, Output, 0, vec![]),
     ]
 }
 
@@ -317,9 +1000,9 @@ struct Wire {
 
 /// Deferred UI actions (collected during frame, applied after)
 enum UiAction {
-    AddNode(usize, egui::Pos2),  // template idx, world position
+    AddNode(usize, egui::Pos2), // template idx, world position
     RemoveNode(usize),
-    BeginWire(usize, usize),     // from_node, from_port
+    BeginWire(usize, usize), // from_node, from_port
     FinishWire { from_node: usize, from_port: usize, to_node: usize, to_port: usize },
     ParamChanged(u32, u32, f32), // node_id, param_hash, value
 }
@@ -345,8 +1028,8 @@ struct JodugaApp {
 
     // UI state
     search_text: String,
-    pan: egui::Vec2,       // canvas pan offset
-    zoom: f32,             // canvas zoom level (1.0 = 100%)
+    pan: egui::Vec2, // canvas pan offset
+    zoom: f32,       // canvas zoom level (1.0 = 100%)
     show_settings: bool,
     sample_rate: u32,
     buffer_size: u32,
@@ -483,17 +1166,27 @@ impl JodugaApp {
 
         let (compiled_nodes, compiled_edges, exec_order) = match shadow.compile() {
             Ok(v) => v,
-            Err(e) => { self.status = format!("Compile error: {e}"); return; }
+            Err(e) => {
+                self.status = format!("Compile error: {e}");
+                return;
+            }
         };
 
-        let output_id = self.nodes.iter()
+        let output_id = self
+            .nodes
+            .iter()
             .find(|n| matches!(self.catalog[n.template_idx].engine_type, NodeType::Output))
             .map(|n| n.id as u32)
             .unwrap_or(0);
 
         match AudioEngineWrapper::new(
-            compiled_nodes, compiled_edges, exec_order,
-            output_id, self.sample_rate, self.buffer_size, 0,
+            compiled_nodes,
+            compiled_edges,
+            exec_order,
+            output_id,
+            self.sample_rate,
+            self.buffer_size,
+            0,
         ) {
             Ok(mut eng) => {
                 if let Err(e) = eng.start() {
@@ -509,6 +1202,18 @@ impl JodugaApp {
                             let _ = eng.set_param(n.id as u32, p.hash, n.param_values[i]);
                         }
                     }
+                    // Send mode/subtype initialization param
+                    let mode_hash: Option<u32> = match tmpl.engine_type {
+                        NodeType::Oscillator => Some(0xAD), // WAVEFORM_TYPE
+                        NodeType::Filter => Some(0xBD),     // FILTER_MODE
+                        NodeType::Gain => Some(0xCF),       // GAIN_MODE
+                        NodeType::Delay => Some(0xCD),      // DELAY_MODE
+                        NodeType::Effects => Some(0xCE),    // EFFECTS_MODE
+                        _ => None,
+                    };
+                    if let Some(hash) = mode_hash {
+                        let _ = eng.set_param(n.id as u32, hash, tmpl.subtype as f32);
+                    }
                 }
 
                 // Open cpal output stream
@@ -521,7 +1226,7 @@ impl JodugaApp {
 
                 self.engine = Some(eng);
                 self.running = true;
-                self.status = "▶ Running".into();
+                self.status = "▶ Running (graph locked — only sliders active)".into();
             }
             Err(e) => self.status = format!("Init error: {e}"),
         }
@@ -610,37 +1315,62 @@ impl eframe::App for JodugaApp {
         let toolbar_resp = egui::TopBottomPanel::top("toolbar")
             .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(8)))
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("toolbar_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                        egui::Order::Tooltip,
+                        egui::Id::new("toolbar_layer"),
+                    )),
                     |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading(egui::RichText::new("🎵 Joduga").strong().color(ACCENT));
-                    ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.heading(egui::RichText::new("🎵 Joduga").strong().color(ACCENT));
+                            ui.separator();
 
-                    if self.running {
-                        if ui.button(egui::RichText::new("⏹  Stop").color(RED).strong()).clicked() {
-                            self.stop_engine();
-                        }
-                    } else if ui.button(egui::RichText::new("▶  Start").color(GREEN).strong()).clicked() {
-                        self.start_engine();
-                    }
+                            if self.running {
+                                if ui
+                                    .button(egui::RichText::new("⏹  Stop").color(RED).strong())
+                                    .clicked()
+                                {
+                                    self.stop_engine();
+                                }
+                            } else if ui
+                                .button(egui::RichText::new("▶  Start").color(GREEN).strong())
+                                .clicked()
+                            {
+                                self.start_engine();
+                            }
 
-                    ui.separator();
-                    let status_color = if self.running { GREEN } else { egui::Color32::GRAY };
-                    ui.label(egui::RichText::new(&self.status).color(status_color));
+                            ui.separator();
+                            let status_color =
+                                if self.running { GREEN } else { egui::Color32::GRAY };
+                            ui.label(egui::RichText::new(&self.status).color(status_color));
 
-                    // Right-aligned settings button
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(if self.show_settings { "⚙ Settings ▾" } else { "⚙ Settings" }).clicked() {
-                            self.show_settings = !self.show_settings;
-                        }
-                    });
+                            // Right-aligned settings button
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .button(if self.show_settings {
+                                            "⚙ Settings ▾"
+                                        } else {
+                                            "⚙ Settings"
+                                        })
+                                        .clicked()
+                                    {
+                                        self.show_settings = !self.show_settings;
+                                    }
+                                },
+                            );
 
-                    if self.pending_wire.is_some() {
-                        ui.separator();
-                        ui.label(egui::RichText::new("🔗 Click an input port to connect · Esc to cancel").color(egui::Color32::YELLOW));
-                    }
-                });
+                            if self.pending_wire.is_some() {
+                                ui.separator();
+                                ui.label(
+                                    egui::RichText::new(
+                                        "🔗 Click an input port to connect · Esc to cancel",
+                                    )
+                                    .color(egui::Color32::YELLOW),
+                                );
+                            }
+                        });
                     },
                 );
             });
@@ -651,26 +1381,29 @@ impl eframe::App for JodugaApp {
             .exact_height(100.0)
             .frame(egui::Frame::new().fill(SURFACE).inner_margin(egui::Margin::same(4)))
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("waveform_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                        egui::Order::Tooltip,
+                        egui::Id::new("waveform_layer"),
+                    )),
                     |ui| {
-                let wf_data = self.waveform.lock().unwrap().clone();
-                let points: PlotPoints = wf_data
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &v)| [i as f64, v as f64])
-                    .collect();
-                Plot::new("waveform_display")
-                    .height(85.0)
-                    .show_axes(false)
-                    .allow_zoom(false)
-                    .allow_drag(false)
-                    .allow_scroll(false)
-                    .include_y(-1.0)
-                    .include_y(1.0)
-                    .show(ui, |plot_ui| {
-                        plot_ui.line(Line::new(points).color(ACCENT));
-                    });
+                        let wf_data = self.waveform.lock().unwrap().clone();
+                        let points: PlotPoints = wf_data
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &v)| [i as f64, v as f64])
+                            .collect();
+                        Plot::new("waveform_display")
+                            .height(85.0)
+                            .show_axes(false)
+                            .allow_zoom(false)
+                            .allow_drag(false)
+                            .allow_scroll(false)
+                            .include_y(-1.0)
+                            .include_y(1.0)
+                            .show(ui, |plot_ui| {
+                                plot_ui.line(Line::new(points).color(ACCENT));
+                            });
                     },
                 );
             });
@@ -679,67 +1412,80 @@ impl eframe::App for JodugaApp {
         // ── Left panel: node catalog ────────────────────────────────
         let catalog_resp = egui::SidePanel::left("node_catalog")
             .default_width(190.0)
-            .frame(egui::Frame::new().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(24, 24, 32))
+                    .inner_margin(egui::Margin::same(8)),
+            )
             .show(ctx, |ui| {
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("catalog_layer")),
+                ui.scope_builder(
+                    egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                        egui::Order::Tooltip,
+                        egui::Id::new("catalog_layer"),
+                    )),
                     |ui| {
-                ui.heading(egui::RichText::new("Node Catalog").color(ACCENT));
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("🔍");
-                    ui.text_edit_singleline(&mut self.search_text);
-                });
-                ui.separator();
+                        ui.heading(egui::RichText::new("Node Catalog").color(ACCENT));
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("🔍");
+                            ui.text_edit_singleline(&mut self.search_text);
+                        });
+                        ui.separator();
 
-                let search_lower = self.search_text.to_lowercase();
+                        let search_lower = self.search_text.to_lowercase();
 
-                // Collect unique categories in order
-                let mut categories: Vec<&str> = Vec::new();
-                for tmpl in &self.catalog {
-                    if !categories.contains(&tmpl.category) {
-                        categories.push(tmpl.category);
-                    }
-                }
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if self.running {
-                        ui.disable();
-                    }
-
-                    for cat in &categories {
-                        let matching: Vec<(usize, &NodeTemplate)> = self.catalog.iter()
-                            .enumerate()
-                            .filter(|(_, t)| t.category == *cat)
-                            .filter(|(_, t)| search_lower.is_empty() || t.name.to_lowercase().contains(&search_lower))
-                            .collect();
-
-                        if matching.is_empty() {
-                            continue;
+                        // Collect unique categories in order
+                        let mut categories: Vec<&str> = Vec::new();
+                        for tmpl in &self.catalog {
+                            if !categories.contains(&tmpl.category) {
+                                categories.push(tmpl.category);
+                            }
                         }
 
-                        let cat_color = matching[0].1.color;
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new(*cat).color(cat_color).strong()
-                        )
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            for (idx, tmpl) in matching {
-                                let label = format!("{} {}", tmpl.icon, tmpl.name);
-                                let tooltip = format!("{} inputs, {} outputs", tmpl.num_inputs, tmpl.num_outputs);
-                                if ui.button(&label).on_hover_text(tooltip).clicked() {
-                                    // Spawn at a reasonable position, offset by node count
-                                    let offset = (self.nodes.len() as f32) * 30.0;
-                                    let world_pos = egui::pos2(
-                                        100.0 + offset,
-                                        50.0 + (offset % 300.0),
-                                    );
-                                    actions.push(UiAction::AddNode(idx, world_pos));
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if self.running {
+                                ui.disable();
+                            }
+
+                            for cat in &categories {
+                                let matching: Vec<(usize, &NodeTemplate)> = self
+                                    .catalog
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, t)| t.category == *cat)
+                                    .filter(|(_, t)| {
+                                        search_lower.is_empty()
+                                            || t.name.to_lowercase().contains(&search_lower)
+                                    })
+                                    .collect();
+
+                                if matching.is_empty() {
+                                    continue;
                                 }
+
+                                let cat_color = matching[0].1.color;
+                                egui::CollapsingHeader::new(
+                                    egui::RichText::new(*cat).color(cat_color).strong(),
+                                )
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    for (idx, tmpl) in matching {
+                                        let label = format!("{} {}", tmpl.icon, tmpl.name);
+                                        let tooltip = format!(
+                                            "{} inputs, {} outputs",
+                                            tmpl.num_inputs, tmpl.num_outputs
+                                        );
+                                        if ui.button(&label).on_hover_text(tooltip).clicked() {
+                                            // Spawn at a reasonable position, offset by node count
+                                            let offset = (self.nodes.len() as f32) * 30.0;
+                                            let world_pos =
+                                                egui::pos2(100.0 + offset, 50.0 + (offset % 300.0));
+                                            actions.push(UiAction::AddNode(idx, world_pos));
+                                        }
+                                    }
+                                });
                             }
                         });
-                    }
-                });
                     },
                 );
             });
@@ -750,239 +1496,270 @@ impl eframe::App for JodugaApp {
         if self.show_settings {
             let settings_resp = egui::SidePanel::right("settings_panel")
                 .default_width(210.0)
-                .frame(egui::Frame::new().fill(egui::Color32::from_rgb(24, 24, 32)).inner_margin(egui::Margin::same(8)))
+                .frame(
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(24, 24, 32))
+                        .inner_margin(egui::Margin::same(8)),
+                )
                 .show(ctx, |ui| {
-                    ui.with_layer_id(
-                        egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("settings_layer")),
+                    ui.scope_builder(
+                        egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                            egui::Order::Tooltip,
+                            egui::Id::new("settings_layer"),
+                        )),
                         |ui| {
-                    ui.heading(egui::RichText::new("⚙ Settings").color(ACCENT));
-                    ui.separator();
+                            ui.heading(egui::RichText::new("⚙ Settings").color(ACCENT));
+                            ui.separator();
 
-                    ui.label(egui::RichText::new("Audio").strong().color(egui::Color32::LIGHT_GRAY));
-                    ui.horizontal(|ui| {
-                        ui.label("Sample Rate:");
-                        egui::ComboBox::from_id_salt("sample_rate")
-                            .selected_text(format!("{} Hz", self.sample_rate))
-                            .show_ui(ui, |ui| {
-                                for sr in [22050, 44100, 48000, 96000u32] {
-                                    ui.selectable_value(&mut self.sample_rate, sr, format!("{sr} Hz"));
-                                }
+                            ui.label(
+                                egui::RichText::new("Audio")
+                                    .strong()
+                                    .color(egui::Color32::LIGHT_GRAY),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.label("Sample Rate:");
+                                egui::ComboBox::from_id_salt("sample_rate")
+                                    .selected_text(format!("{} Hz", self.sample_rate))
+                                    .show_ui(ui, |ui| {
+                                        for sr in [22050, 44100, 48000, 96000u32] {
+                                            ui.selectable_value(
+                                                &mut self.sample_rate,
+                                                sr,
+                                                format!("{sr} Hz"),
+                                            );
+                                        }
+                                    });
                             });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Buffer Size:");
-                        egui::ComboBox::from_id_salt("buffer_size")
-                            .selected_text(format!("{}", self.buffer_size))
-                            .show_ui(ui, |ui| {
-                                for bs in [64, 128, 256, 512, 1024u32] {
-                                    ui.selectable_value(&mut self.buffer_size, bs, format!("{bs}"));
-                                }
+                            ui.horizontal(|ui| {
+                                ui.label("Buffer Size:");
+                                egui::ComboBox::from_id_salt("buffer_size")
+                                    .selected_text(format!("{}", self.buffer_size))
+                                    .show_ui(ui, |ui| {
+                                        for bs in [64, 128, 256, 512, 1024u32] {
+                                            ui.selectable_value(
+                                                &mut self.buffer_size,
+                                                bs,
+                                                format!("{bs}"),
+                                            );
+                                        }
+                                    });
                             });
-                    });
 
-                    ui.add_space(10.0);
-                    ui.label(egui::RichText::new("Display").strong().color(egui::Color32::LIGHT_GRAY));
-                    ui.checkbox(&mut self.show_grid, "Show Grid");
+                            ui.add_space(10.0);
+                            ui.label(
+                                egui::RichText::new("Display")
+                                    .strong()
+                                    .color(egui::Color32::LIGHT_GRAY),
+                            );
+                            ui.checkbox(&mut self.show_grid, "Show Grid");
 
-                    ui.add_space(10.0);
-                    ui.label(egui::RichText::new("Graph Info").strong().color(egui::Color32::LIGHT_GRAY));
-                    ui.label(format!("Nodes: {}", self.nodes.len()));
-                    ui.label(format!("Connections: {}", self.wires.len()));
-                    ui.label(format!("Zoom: {:.0}%", self.zoom * 100.0));
-                    if ui.small_button("Reset Zoom").clicked() {
-                        self.zoom = 1.0;
-                    }
+                            ui.add_space(10.0);
+                            ui.label(
+                                egui::RichText::new("Graph Info")
+                                    .strong()
+                                    .color(egui::Color32::LIGHT_GRAY),
+                            );
+                            ui.label(format!("Nodes: {}", self.nodes.len()));
+                            ui.label(format!("Connections: {}", self.wires.len()));
+                            ui.label(format!("Zoom: {:.0}%", self.zoom * 100.0));
+                            if ui.small_button("Reset Zoom").clicked() {
+                                self.zoom = 1.0;
+                            }
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.label(egui::RichText::new("Controls").small().color(egui::Color32::GRAY));
-                    ui.label(egui::RichText::new(
-                        "• Left panel or right-click → add nodes\n\
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new("Controls").small().color(egui::Color32::GRAY),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "• Left panel or right-click → add nodes\n\
                          • Click green ● then cyan ● → connect\n\
                          • Middle-drag or Shift+drag → pan\n\
                          • Ctrl+scroll → zoom in/out\n\
                          • Drag title bar → move node\n\
                          • Drag node edge → resize\n\
                          • ✖ or close → remove node\n\
-                         • Escape → cancel connection"
-                    ).small().color(egui::Color32::GRAY));
-                    },
-                );
+                         • Escape → cancel connection",
+                                )
+                                .small()
+                                .color(egui::Color32::GRAY),
+                            );
+                        },
+                    );
                 });
             self.settings_rect = Some(settings_resp.response.rect);
         }
 
         // ── Central canvas ──────────────────────────────────────────
-        let mut saved_canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BG))
-            .show(ctx, |ui| {
-                let canvas_rect = ui.max_rect();
-                saved_canvas_rect = canvas_rect;
+        let mut saved_canvas_rect =
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG)).show(ctx, |ui| {
+            let canvas_rect = ui.max_rect();
+            saved_canvas_rect = canvas_rect;
 
-                // Canvas interaction: pan + right-click menu
-                let canvas_resp = ui.interact(
-                    canvas_rect,
-                    egui::Id::new("canvas_bg"),
-                    egui::Sense::click_and_drag(),
-                );
+            // Canvas interaction: pan + right-click menu
+            let canvas_resp =
+                ui.interact(canvas_rect, egui::Id::new("canvas_bg"), egui::Sense::click_and_drag());
 
-                // Pan: middle-mouse drag or shift+drag
-                if canvas_resp.dragged_by(egui::PointerButton::Middle) ||
-                   (canvas_resp.dragged() && ctx.input(|i| i.modifiers.shift))
+            // Pan: middle-mouse drag or shift+drag
+            if canvas_resp.dragged_by(egui::PointerButton::Middle)
+                || (canvas_resp.dragged() && ctx.input(|i| i.modifiers.shift))
+            {
+                self.pan += canvas_resp.drag_delta();
+            }
+
+            // Scroll: Ctrl+scroll = zoom, normal scroll = pan
+            // Check pointer position directly (not canvas_resp.hovered()) so
+            // zoom/scroll works even when cursor is over a node Window
+            let pointer_in_canvas = ctx
+                .input(|i| i.pointer.hover_pos().map(|p| canvas_rect.contains(p)).unwrap_or(false));
+            if pointer_in_canvas {
+                let ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
+                let pinch_zoom = ctx.input(|i| i.zoom_delta());
+                let mouse_pos =
+                    ctx.input(|i| i.pointer.hover_pos().unwrap_or(canvas_rect.center()));
+
+                // Pinch-to-zoom (trackpad)
+                if pinch_zoom != 1.0 {
+                    let mwx = (mouse_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom;
+                    let mwy = (mouse_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom;
+                    self.zoom = (self.zoom * pinch_zoom).clamp(0.15, 5.0);
+                    self.pan.x = mouse_pos.x - canvas_rect.min.x - mwx * self.zoom;
+                    self.pan.y = mouse_pos.y - canvas_rect.min.y - mwy * self.zoom;
+                } else if ctrl && scroll_y != 0.0 {
+                    // Ctrl+scroll zoom
+                    let mwx = (mouse_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom;
+                    let mwy = (mouse_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom;
+                    let zd = if scroll_y > 0.0 { 1.1 } else { 1.0 / 1.1 };
+                    self.zoom = (self.zoom * zd).clamp(0.15, 5.0);
+                    self.pan.x = mouse_pos.x - canvas_rect.min.x - mwx * self.zoom;
+                    self.pan.y = mouse_pos.y - canvas_rect.min.y - mwy * self.zoom;
+                } else {
+                    // Regular scroll = pan
+                    let scroll = ctx.input(|i| i.smooth_scroll_delta);
+                    if scroll != egui::Vec2::ZERO {
+                        self.pan += scroll;
+                    }
+                }
+            }
+
+            // Right-click context menu for quick-adding nodes
+            let click_screen_pos =
+                canvas_resp.interact_pointer_pos().unwrap_or(canvas_rect.center());
+            let click_world_pos = egui::pos2(
+                (click_screen_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom,
+                (click_screen_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom,
+            );
+
+            canvas_resp.context_menu(|ui| {
+                if self.running {
+                    ui.label("Stop the engine to edit the graph.");
+                    return;
+                }
+                ui.heading("Add Node");
+                ui.separator();
+
+                // Quick-access: Output first
+                for (idx, tmpl) in self.catalog.iter().enumerate() {
+                    if tmpl.name == "Speaker Output"
+                        && ui.button(format!("{} {}", tmpl.icon, tmpl.name)).clicked()
+                    {
+                        actions.push(UiAction::AddNode(idx, click_world_pos));
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+
+                // Sub-menus by category
+                for cat_name in
+                    ["Oscillators", "Filters", "Dynamics", "Effects", "Modulators", "Utility"]
                 {
-                    self.pan += canvas_resp.drag_delta();
-                }
-
-                // Scroll: Ctrl+scroll = zoom, normal scroll = pan
-                // Check pointer position directly (not canvas_resp.hovered()) so
-                // zoom/scroll works even when cursor is over a node Window
-                let pointer_in_canvas = ctx.input(|i| {
-                    i.pointer.hover_pos().map(|p| canvas_rect.contains(p)).unwrap_or(false)
-                });
-                if pointer_in_canvas {
-                    let ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
-                    let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
-                    let pinch_zoom = ctx.input(|i| i.zoom_delta());
-                    let mouse_pos = ctx.input(|i| {
-                        i.pointer.hover_pos().unwrap_or(canvas_rect.center())
-                    });
-
-                    // Pinch-to-zoom (trackpad)
-                    if pinch_zoom != 1.0 {
-                        let mwx = (mouse_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom;
-                        let mwy = (mouse_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom;
-                        self.zoom = (self.zoom * pinch_zoom).clamp(0.15, 5.0);
-                        self.pan.x = mouse_pos.x - canvas_rect.min.x - mwx * self.zoom;
-                        self.pan.y = mouse_pos.y - canvas_rect.min.y - mwy * self.zoom;
-                    } else if ctrl && scroll_y != 0.0 {
-                        // Ctrl+scroll zoom
-                        let mwx = (mouse_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom;
-                        let mwy = (mouse_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom;
-                        let zd = if scroll_y > 0.0 { 1.1 } else { 1.0 / 1.1 };
-                        self.zoom = (self.zoom * zd).clamp(0.15, 5.0);
-                        self.pan.x = mouse_pos.x - canvas_rect.min.x - mwx * self.zoom;
-                        self.pan.y = mouse_pos.y - canvas_rect.min.y - mwy * self.zoom;
-                    } else {
-                        // Regular scroll = pan
-                        let scroll = ctx.input(|i| i.smooth_scroll_delta);
-                        if scroll != egui::Vec2::ZERO {
-                            self.pan += scroll;
-                        }
-                    }
-                }
-
-                // Right-click context menu for quick-adding nodes
-                let click_screen_pos = canvas_resp
-                    .interact_pointer_pos()
-                    .unwrap_or(canvas_rect.center());
-                let click_world_pos = egui::pos2(
-                    (click_screen_pos.x - canvas_rect.min.x - self.pan.x) / self.zoom,
-                    (click_screen_pos.y - canvas_rect.min.y - self.pan.y) / self.zoom,
-                );
-
-                canvas_resp.context_menu(|ui| {
-                    if self.running {
-                        ui.label("Stop the engine to edit the graph.");
-                        return;
-                    }
-                    ui.heading("Add Node");
-                    ui.separator();
-
-                    // Quick-access: Output first
-                    for (idx, tmpl) in self.catalog.iter().enumerate() {
-                        if tmpl.name == "Speaker Output" {
-                            if ui.button(format!("{} {}", tmpl.icon, tmpl.name)).clicked() {
+                    ui.menu_button(cat_name, |ui| {
+                        for (idx, tmpl) in self.catalog.iter().enumerate() {
+                            if tmpl.category == cat_name
+                                && ui.button(format!("{} {}", tmpl.icon, tmpl.name)).clicked()
+                            {
                                 actions.push(UiAction::AddNode(idx, click_world_pos));
                                 ui.close_menu();
                             }
                         }
-                    }
-                    ui.separator();
-
-                    // Sub-menus by category
-                    for cat_name in ["Oscillators", "Filters", "Dynamics", "Effects", "Modulators", "Utility"] {
-                        ui.menu_button(cat_name, |ui| {
-                            for (idx, tmpl) in self.catalog.iter().enumerate() {
-                                if tmpl.category == cat_name {
-                                    if ui.button(format!("{} {}", tmpl.icon, tmpl.name)).clicked() {
-                                        actions.push(UiAction::AddNode(idx, click_world_pos));
-                                        ui.close_menu();
-                                    }
-                                }
-                            }
-                        });
-                    }
-                });
-
-                let painter = ui.painter();
-
-                // ── Draw grid ───────────────────────────────────────
-                if self.show_grid {
-                    let grid_spacing = 40.0f32 * self.zoom;
-                    let grid_color = egui::Color32::from_rgba_premultiplied(50, 50, 70, 30);
-                    let stroke = egui::Stroke::new(0.5, grid_color);
-
-                    let offset_x = self.pan.x.rem_euclid(grid_spacing);
-                    let offset_y = self.pan.y.rem_euclid(grid_spacing);
-
-                    let mut x = canvas_rect.min.x + offset_x;
-                    while x <= canvas_rect.max.x {
-                        painter.line_segment(
-                            [egui::pos2(x, canvas_rect.min.y), egui::pos2(x, canvas_rect.max.y)],
-                            stroke,
-                        );
-                        x += grid_spacing;
-                    }
-                    let mut y = canvas_rect.min.y + offset_y;
-                    while y <= canvas_rect.max.y {
-                        painter.line_segment(
-                            [egui::pos2(canvas_rect.min.x, y), egui::pos2(canvas_rect.max.x, y)],
-                            stroke,
-                        );
-                        y += grid_spacing;
-                    }
-                }
-
-                // ── Draw established wires ──────────────────────────
-                for wire in &self.wires {
-                    let from_pos = self.node_by_id(wire.from_node)
-                        .and_then(|n| n.output_port_screen.get(wire.from_port).copied().flatten());
-                    let to_pos = self.node_by_id(wire.to_node)
-                        .and_then(|n| n.input_port_screen.get(wire.to_port).copied().flatten());
-                    if let (Some(fp), Some(tp)) = (from_pos, to_pos) {
-                        draw_bezier_wire(painter, fp, tp, ACCENT, 2.5);
-                    }
-                }
-
-                // ── Draw in-progress wire ───────────────────────────
-                if let Some((from_id, from_port)) = self.pending_wire {
-                    if let Some(from_pos) = self.node_by_id(from_id)
-                        .and_then(|n| n.output_port_screen.get(from_port).copied().flatten())
-                    {
-                        if let Some(mouse_pos) = ctx.pointer_hover_pos() {
-                            draw_bezier_wire(
-                                painter,
-                                from_pos,
-                                mouse_pos,
-                                egui::Color32::from_rgba_premultiplied(0, 180, 216, 120),
-                                2.0,
-                            );
-                        }
-                    }
-                }
-
-                // ── Empty canvas hint ───────────────────────────────
-                if self.nodes.is_empty() {
-                    painter.text(
-                        canvas_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "Right-click or use the left panel to add nodes",
-                        egui::FontId::proportional(18.0),
-                        egui::Color32::GRAY,
-                    );
+                    });
                 }
             });
+
+            let painter = ui.painter();
+
+            // ── Draw grid ───────────────────────────────────────
+            if self.show_grid {
+                let grid_spacing = 40.0f32 * self.zoom;
+                let grid_color = egui::Color32::from_rgba_premultiplied(50, 50, 70, 30);
+                let stroke = egui::Stroke::new(0.5, grid_color);
+
+                let offset_x = self.pan.x.rem_euclid(grid_spacing);
+                let offset_y = self.pan.y.rem_euclid(grid_spacing);
+
+                let mut x = canvas_rect.min.x + offset_x;
+                while x <= canvas_rect.max.x {
+                    painter.line_segment(
+                        [egui::pos2(x, canvas_rect.min.y), egui::pos2(x, canvas_rect.max.y)],
+                        stroke,
+                    );
+                    x += grid_spacing;
+                }
+                let mut y = canvas_rect.min.y + offset_y;
+                while y <= canvas_rect.max.y {
+                    painter.line_segment(
+                        [egui::pos2(canvas_rect.min.x, y), egui::pos2(canvas_rect.max.x, y)],
+                        stroke,
+                    );
+                    y += grid_spacing;
+                }
+            }
+
+            // ── Draw established wires ──────────────────────────
+            for wire in &self.wires {
+                let from_pos = self
+                    .node_by_id(wire.from_node)
+                    .and_then(|n| n.output_port_screen.get(wire.from_port).copied().flatten());
+                let to_pos = self
+                    .node_by_id(wire.to_node)
+                    .and_then(|n| n.input_port_screen.get(wire.to_port).copied().flatten());
+                if let (Some(fp), Some(tp)) = (from_pos, to_pos) {
+                    draw_bezier_wire(painter, fp, tp, ACCENT, 2.5);
+                }
+            }
+
+            // ── Draw in-progress wire ───────────────────────────
+            if let Some((from_id, from_port)) = self.pending_wire {
+                if let Some(from_pos) = self
+                    .node_by_id(from_id)
+                    .and_then(|n| n.output_port_screen.get(from_port).copied().flatten())
+                {
+                    if let Some(mouse_pos) = ctx.pointer_hover_pos() {
+                        draw_bezier_wire(
+                            painter,
+                            from_pos,
+                            mouse_pos,
+                            egui::Color32::from_rgba_premultiplied(0, 180, 216, 120),
+                            2.0,
+                        );
+                    }
+                }
+            }
+
+            // ── Empty canvas hint ───────────────────────────────
+            if self.nodes.is_empty() {
+                painter.text(
+                    canvas_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Right-click or use the left panel to add nodes",
+                    egui::FontId::proportional(18.0),
+                    egui::Color32::GRAY,
+                );
+            }
+        });
 
         // ── Render nodes as Windows (draggable, resizable) ────────
         let pending = self.pending_wire;
@@ -1043,8 +1820,7 @@ impl eframe::App for JodugaApp {
                         } else {
                             ACCENT
                         };
-                        ui.painter()
-                            .circle_filled(port_rect.center(), PORT_RADIUS, port_color);
+                        ui.painter().circle_filled(port_rect.center(), PORT_RADIUS, port_color);
                         if pending.is_some() && port_resp.hovered() {
                             ui.painter().circle_stroke(
                                 port_rect.center(),
@@ -1089,47 +1865,30 @@ impl eframe::App for JodugaApp {
                     slider = slider.text(pdef.name);
                     if ui.add(slider).changed() {
                         node.param_values[pi] = val;
-                        actions.push(UiAction::ParamChanged(
-                            node_id as u32,
-                            pdef.hash,
-                            val,
-                        ));
+                        actions.push(UiAction::ParamChanged(node_id as u32, pdef.hash, val));
                     }
                 }
 
                 // ── Output ports ────────────────────────
                 for port_idx in 0..tmpl.num_outputs {
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            let (port_rect, port_resp) = ui.allocate_exact_size(
-                                egui::vec2(PORT_SIZE, PORT_SIZE),
-                                egui::Sense::click(),
-                            );
-                            let port_color = if port_resp.hovered() {
-                                egui::Color32::WHITE
-                            } else {
-                                GREEN
-                            };
-                            ui.painter().circle_filled(
-                                port_rect.center(),
-                                PORT_RADIUS,
-                                port_color,
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("Out {port_idx}")).small(),
-                            );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (port_rect, port_resp) = ui.allocate_exact_size(
+                            egui::vec2(PORT_SIZE, PORT_SIZE),
+                            egui::Sense::click(),
+                        );
+                        let port_color =
+                            if port_resp.hovered() { egui::Color32::WHITE } else { GREEN };
+                        ui.painter().circle_filled(port_rect.center(), PORT_RADIUS, port_color);
+                        ui.label(egui::RichText::new(format!("Out {port_idx}")).small());
 
-                            if port_idx < node.output_port_screen.len() {
-                                node.output_port_screen[port_idx] =
-                                    Some(port_rect.center());
-                            }
+                        if port_idx < node.output_port_screen.len() {
+                            node.output_port_screen[port_idx] = Some(port_rect.center());
+                        }
 
-                            if port_resp.clicked() && pending.is_none() {
-                                actions.push(UiAction::BeginWire(node_id, port_idx));
-                            }
-                        },
-                    );
+                        if port_resp.clicked() && pending.is_none() {
+                            actions.push(UiAction::BeginWire(node_id, port_idx));
+                        }
+                    });
                 }
             });
 
@@ -1154,9 +1913,10 @@ impl eframe::App for JodugaApp {
         // are on Order::Background (below nodes). These masks sit on
         // Order::Foreground which is above node Windows (Order::Middle).
         {
-            let mask = ctx.layer_painter(
-                egui::LayerId::new(egui::Order::Foreground, egui::Id::new("panel_masks")),
-            );
+            let mask = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("panel_masks"),
+            ));
             let _screen = ctx.screen_rect();
 
             // Top toolbar mask
@@ -1182,20 +1942,28 @@ impl eframe::App for JodugaApp {
         for action in actions {
             match action {
                 UiAction::AddNode(template_idx, world_pos) => {
-                    self.add_node(template_idx, world_pos);
+                    if !self.running {
+                        self.add_node(template_idx, world_pos);
+                    }
                 }
                 UiAction::RemoveNode(id) => {
-                    self.remove_node(id);
+                    if !self.running {
+                        self.remove_node(id);
+                    }
                 }
                 UiAction::BeginWire(node_id, port) => {
-                    self.pending_wire = Some((node_id, port));
+                    if !self.running {
+                        self.pending_wire = Some((node_id, port));
+                    }
                 }
                 UiAction::FinishWire { from_node, from_port, to_node, to_port } => {
-                    // Remove any existing wire to the same input
-                    self.wires.retain(|w| !(w.to_node == to_node && w.to_port == to_port));
-                    self.wires.push(Wire { from_node, from_port, to_node, to_port });
-                    self.pending_wire = None;
-                    wire_completed = true;
+                    if !self.running {
+                        // Remove any existing wire to the same input
+                        self.wires.retain(|w| !(w.to_node == to_node && w.to_port == to_port));
+                        self.wires.push(Wire { from_node, from_port, to_node, to_port });
+                        self.pending_wire = None;
+                        wire_completed = true;
+                    }
                 }
                 UiAction::ParamChanged(node_id, hash, value) => {
                     if let Some(ref eng) = self.engine {
@@ -1206,10 +1974,11 @@ impl eframe::App for JodugaApp {
         }
 
         // Cancel pending wire on Escape
-        if self.pending_wire.is_some() && !wire_completed {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.pending_wire = None;
-            }
+        if self.pending_wire.is_some()
+            && !wire_completed
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            self.pending_wire = None;
         }
 
         // Continuous repaint while engine is running (for waveform animation)
