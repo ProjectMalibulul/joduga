@@ -3,7 +3,7 @@ name: Nightly
 on:
   schedule:
     # 03:00 UTC every day
-    - cron: "0 3 * * *"
+    - cron: "0 0 1 * *"
   workflow_dispatch:
 
 concurrency:
