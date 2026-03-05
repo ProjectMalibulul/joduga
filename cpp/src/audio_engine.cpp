@@ -8,6 +8,7 @@
 #include "nodes/gain.h"
 #include "nodes/delay.h"
 #include "nodes/effects.h"
+#include "nodes/reverb.h"
 #include "platform/rt_platform.h"
 
 #include <thread>
@@ -99,6 +100,9 @@ static std::unique_ptr<AudioNode> create_node(NodeType type, uint32_t node_id)
     case NODE_TYPE_EFFECTS:
         node = std::make_unique<EffectsNode>();
         break;
+    case NODE_TYPE_REVERB:
+        node = std::make_unique<ReverbNode>();
+        break;
     default:
         std::cerr << "[joduga] Unknown node type: " << type << "\n";
         return nullptr;
@@ -126,7 +130,8 @@ static void audio_thread_main(AudioEngineImpl *e)
     const uint64_t block_ns =
         static_cast<uint64_t>(e->block_size) * 1000000000ULL / e->sample_rate;
 
-    auto get_now_ns = []() -> uint64_t {
+    auto get_now_ns = []() -> uint64_t
+    {
         auto now = std::chrono::steady_clock::now();
         return std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
     };
@@ -136,6 +141,8 @@ static void audio_thread_main(AudioEngineImpl *e)
 
     while (e->is_running.load(std::memory_order_acquire))
     {
+        const uint64_t loop_start_ns = get_now_ns();
+
         // ── Drain param queue ────────────────────────────────────
         uint32_t num_params = 0;
         {
@@ -202,7 +209,17 @@ static void audio_thread_main(AudioEngineImpl *e)
         }
 
         if (e->status_register)
-            reinterpret_cast<std::atomic<uint32_t>*>(&e->status_register->graph_version)->fetch_add(1u, std::memory_order_release);
+        {
+            std::atomic_ref<uint32_t> graph_version_ref(e->status_register->graph_version);
+            graph_version_ref.fetch_add(1u, std::memory_order_release);
+
+            const uint64_t proc_ns = get_now_ns() - loop_start_ns;
+            const uint32_t load_permil = static_cast<uint32_t>(std::min<uint64_t>(
+                4000u,
+                (proc_ns * 1000u) / (block_ns ? block_ns : 1u)));
+            std::atomic_ref<uint32_t> cpu_load_ref(e->status_register->cpu_load_permil);
+            cpu_load_ref.store(load_permil, std::memory_order_release);
+        }
 
         // ── Deadline-based pacing ────────────────────────────────
         // Sleep only the remaining time until the next block deadline.

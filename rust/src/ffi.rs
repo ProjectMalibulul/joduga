@@ -23,6 +23,7 @@ pub enum NodeType {
     Output = 3,
     Delay = 4,
     Effects = 5,
+    Reverb = 6,
 }
 
 // ── repr(C) structs ─────────────────────────────────────────────────────
@@ -111,5 +112,6 @@ mod tests {
         assert_eq!(NodeType::Output as i32, 3);
         assert_eq!(NodeType::Delay as i32, 4);
         assert_eq!(NodeType::Effects as i32, 5);
+        assert_eq!(NodeType::Reverb as i32, 6);
     }
 }

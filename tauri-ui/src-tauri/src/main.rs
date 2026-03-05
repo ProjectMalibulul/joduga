@@ -67,6 +67,7 @@ fn parse_engine_type(s: &str) -> NodeType {
         "Output" => NodeType::Output,
         "Delay" => NodeType::Delay,
         "Effects" => NodeType::Effects,
+        "Reverb" => NodeType::Reverb,
         _ => NodeType::Gain,
     }
 }
@@ -216,12 +217,23 @@ fn set_param(
     Ok(())
 }
 
+#[tauri::command]
+fn get_engine_cpu_load_permil(state: State<'_, EngineState>) -> Result<u32, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(guard.as_ref().map(|eng| eng.wrapper.cpu_load_permil()).unwrap_or(0))
+}
+
 /* -- entry point -------------------------------------------- */
 
 fn main() {
     tauri::Builder::default()
         .manage(EngineState(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![start_engine, stop_engine, set_param])
+        .invoke_handler(tauri::generate_handler![
+            start_engine,
+            stop_engine,
+            set_param,
+            get_engine_cpu_load_permil
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

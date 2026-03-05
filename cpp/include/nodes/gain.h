@@ -53,7 +53,7 @@ public:
     {
         switch (param_hash)
         {
-        case 0x000000CFu: // GAIN_MODE
+        case ParamHash::GAIN_MODE:
             mode = static_cast<int>(value);
             break;
         case ParamHash::GAIN_LEVEL: // = FREQ = 0x811C9DC5
@@ -71,10 +71,10 @@ public:
         case ParamHash::RELEASE:
             release_ms = std::fmax(1.0f, std::fmin(value, 5000.0f));
             break;
-        case 0xC4u: // Knee
+        case ParamHash::DYN_KNEE:
             knee_db = std::fmax(0.0f, std::fmin(value, 24.0f));
             break;
-        case 0xC5u: // Makeup gain
+        case ParamHash::DYN_MAKEUP:
             makeup_db = std::fmax(-12.0f, std::fmin(value, 48.0f));
             break;
         }
