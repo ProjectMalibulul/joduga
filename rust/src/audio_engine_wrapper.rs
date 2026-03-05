@@ -215,11 +215,14 @@ impl AudioEngineWrapper {
     }
 
     pub fn cpu_load_permil(&self) -> u32 {
-        // SAFETY: field is naturally aligned u32 with static lifetime tied to self.
-        // C++ updates it atomically via std::atomic_ref; we read atomically here.
+        // SAFETY: `cpu_load_permil` is a naturally aligned u32 that C++ updates atomically
+        // via std::atomic_ref. All Rust accesses go through this function and use atomic
+        // operations only. We obtain a raw pointer with `addr_of!` to avoid creating a
+        // reference to memory that may be concurrently modified from C++.
         unsafe {
-            AtomicU32::from_ptr(&self.status_register.cpu_load_permil as *const u32 as *mut u32)
-                .load(Ordering::Acquire)
+            let ptr =
+                std::ptr::addr_of!((*self.status_register).cpu_load_permil) as *mut u32;
+            AtomicU32::from_ptr(ptr).load(Ordering::Acquire)
         }
     }
 }
