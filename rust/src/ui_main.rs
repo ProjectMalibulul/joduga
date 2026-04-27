@@ -1048,11 +1048,24 @@ impl JodugaApp {
     fn new() -> Self {
         let cat = catalog();
 
-        // Find template indices for the default demo chain
-        let osc_idx = 0; // Sine Oscillator
-        let flt_idx = cat.iter().position(|t| t.name == "Low-Pass Filter").unwrap_or(14);
-        let gain_idx = cat.iter().position(|t| t.name == "Gain").unwrap_or(32);
-        let out_idx = cat.iter().position(|t| t.name == "Speaker Output").unwrap_or(cat.len() - 1);
+        // Locate templates by name. A missing template is a catalog drift
+        // bug; a silent unwrap_or(<index>) fallback boots the demo graph
+        // with completely wrong node types (e.g. flt_idx=14 → Reverb,
+        // gain_idx=32 → out-of-range), which then mis-routes audio. Fail
+        // fast with the offending name so the regression surfaces at app
+        // startup instead of as garbled sound.
+        let find = |name: &str| -> usize {
+            cat.iter().position(|t| t.name == name).unwrap_or_else(|| {
+                panic!(
+                    "default-graph template '{name}' missing from catalog \
+                     (catalog drift — update JodugaApp::new())"
+                )
+            })
+        };
+        let osc_idx = find("Sine Oscillator");
+        let flt_idx = find("Low-Pass Filter");
+        let gain_idx = find("Gain");
+        let out_idx = find("Speaker Output");
 
         let make_node = |id: usize, tidx: usize, x: f32, y: f32, cat: &[NodeTemplate]| {
             let tmpl = &cat[tidx];
@@ -2096,5 +2109,20 @@ mod tests {
         let cat = vec![make_template(NodeType::Output)];
         let nodes = vec![make_node(0, 99)];
         assert!(resolve_output_node_id(&nodes, &cat).unwrap_err().contains("unknown template"));
+    }
+
+    /// JodugaApp::new() panics with a descriptive message if the default
+    /// demo-graph templates have been renamed or removed. Pin the names
+    /// here so a catalog refactor surfaces as a unit-test failure instead
+    /// of a startup panic in front of the user.
+    #[test]
+    fn default_graph_templates_exist_in_catalog() {
+        let cat = catalog();
+        for name in ["Sine Oscillator", "Low-Pass Filter", "Gain", "Speaker Output"] {
+            assert!(
+                cat.iter().any(|t| t.name == name),
+                "default-graph template '{name}' missing from catalog"
+            );
+        }
     }
 }

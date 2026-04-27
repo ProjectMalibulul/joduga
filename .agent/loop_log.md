@@ -438,3 +438,38 @@ CompiledGraph.
 **Verify:** cmake --build cmake-build -j builds clean (every TU
 that includes audio_engine.h evaluates the asserts). 26 lib tests
 green, clippy clean.
+
+## Loop 13 — JodugaApp default-graph silent fallback
+
+**Observe:** Loops 7-8 fixed silent unwrap_or fallbacks in start_engine
+but `JodugaApp::new()` still had three of the same anti-pattern:
+  flt_idx  = position("Low-Pass Filter").unwrap_or(14)
+  gain_idx = position("Gain").unwrap_or(32)
+  out_idx  = position("Speaker Output").unwrap_or(cat.len() - 1)
+If the catalog is reorganized, the demo graph silently boots with
+wrong node types — flt_idx=14 might be a Reverb, gain_idx=32 might be
+out of range, and the user hears garbled audio with no diagnostic.
+
+**Decide:** Replace each `unwrap_or(magic)` with a `.unwrap_or_else(panic!)`
+naming the missing template — same rationale as loops 7-8 (fail fast on
+catalog drift). Add a unit test pinning the four template names so a
+catalog refactor surfaces as a test failure instead of a runtime panic.
+
+**Devil's advocate:**
+- Correctness: panicking at app startup is louder than the silent
+  garbled-audio path. Acceptable: catalog drift is a developer bug, and
+  shipping such a build through CI now requires the new test to fail.
+- Scope: the deeper issue is that the demo graph identifies templates
+  by name string. Fixing that (e.g. enum-keyed catalog) is a larger
+  refactor; the panic-with-name behaviour solves the immediate
+  silent-corruption problem. Logged for a future loop.
+- Priority: priority-1 silent-corruption class — exactly the same
+  bug-shape as loops 7-8.
+
+**Act:** rust/src/ui_main.rs::JodugaApp::new — replaced three
+unwrap_or fallbacks with a `find` closure that panics naming the
+missing template. Added default_graph_templates_exist_in_catalog
+test in the same module.
+
+**Verify:** 26 lib + 5 ui_main + 1 smoke = 32 joduga tests. fmt +
+clippy clean.

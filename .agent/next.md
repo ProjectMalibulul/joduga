@@ -1,8 +1,11 @@
-# Loop 13 candidate: audit unwrap_or(0) / unwrap_or_else node-id fallbacks
+# Loop 14 candidate: ShadowGraph DFS fallback (color.get(&next).copied().unwrap_or(0))
 
-Loops 7-8 found that silently falling back to node id 0 / "the last
-node in the list" masked compile failures of the user's graph. Sweep
-the workspace for other unwrap_or / unwrap_or_else / .or(Some(0))
-patterns on Result/Option returns of node lookups, file lookups, or
-parser dispatches that should be hard errors. List them; pick the
-worst one to fix next loop.
+shadow_graph.rs:168 has `match color.get(&next).copied().unwrap_or(0)`
+inside the cycle-detection DFS. If `next` somehow isn't in the color
+map, defaulting to 0 (WHITE) would silently re-traverse it. Audit
+whether this is reachable, and either:
+  - prove unreachable and replace with .expect(), or
+  - prove reachable and define correct behaviour.
+
+Backup: refactor catalog() to be enum-keyed so demo-graph lookups can't
+silently miss a renamed template (deeper fix mentioned in loop 13).
