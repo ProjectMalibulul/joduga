@@ -346,3 +346,36 @@ totals: 19 lib + 1 smoke + 4 ui_main + 5 tauri = 29. fmt + clippy
 --all-targets -D warnings clean. C++ engine actually produces
 non-zero samples through the new per-output buffer layout from loop 5
 — retroactive structural confirmation.
+
+## Loop 10 — ABI-layout pinning tests for FFI structs
+
+**Observe:** loop 1 added an alignment test for ParamUpdateCmd /
+MIDIEventCmd, but NodeDesc, NodeConnection, AudioEngineConfig, and
+CompiledGraph — also shared with C++ via FFI — had no layout tests.
+A field reorder on either side would silently mis-route data: e.g.
+swap `num_inputs` and `num_outputs` in NodeDesc and the engine would
+allocate the wrong number of input ports for every node.
+
+**Decide:** Three candidates: (a) size+align+offset_of tests for all
+four FFI structs; (b) a single round-trip test that writes a NodeDesc
+in Rust and reads it back via a tiny C++ helper; (c) lift the
+ParamHash duplication. (b) is overkill — std::mem::offset_of! gives
+the same coverage for a tenth of the cost. Pick (a). Skip (c) again —
+it's plumbing, not a defect.
+
+**Devil's advocate:**
+- Correctness: relies on Rust's repr(C) actually agreeing with the
+  C++ side's typedef struct. Both are documented as #[repr(C)] /
+  C-typedef structs; the test pins the bytes either way.
+- Scope: CompiledGraph layout depends on pointer width. Test gated on
+  target_pointer_width=64 — the only platform the engine builds for.
+  32-bit case left unchecked rather than wrong.
+- Priority: lower than loop 9's smoke test but higher than the cleanup
+  candidates. Done now while the FFI is fresh.
+
+**Act:** Extended `rust/src/ffi.rs::tests` with 4 new layout tests
+using std::mem::offset_of! (stable since 1.77). Each test cites the
+C++ header line that must be kept in sync.
+
+**Verify:** 23 lib tests (was 19) + 1 smoke + 4 ui_main + 5 tauri
+= 33 total. fmt + clippy --workspace --all-targets -D warnings clean.
