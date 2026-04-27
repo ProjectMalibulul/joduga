@@ -108,3 +108,39 @@ and `parallel_edges_to_distinct_ports_are_allowed`.
 **Verify:** `cargo test -p joduga --lib` → 17 passed (15 prior + 2 new).
 `cargo fmt --check` clean. `cargo clippy --workspace --all-targets -- -D warnings`
 clean.
+
+## Loop 4 — parse_engine_type returns Result instead of silently coercing
+
+**Observe:** Loops 1-3 committed cleanly. Workspace tests 17/17 + lint green.
+Bootstrap issue #4: `parse_engine_type` in the Tauri backend silently
+mapped any unknown engine_type string to `NodeType::Gain`, turning a
+frontend serialization bug into a silent wrong-engine-type bug at runtime.
+
+**Decide:** Three candidates: (a) make parse_engine_type fallible and
+propagate, (b) ui_main output_node_id off-by-one (UX-coupled), (c) C++
+multi-output bug (latent). Pick (a): direct correctness fix, single
+function + one caller, testable as a pure helper without the GUI runtime.
+
+**Devil's advocate:**
+- *Correctness*: Could legit input now fail? Only if the React side
+  serializes a name that isn't in the catalog — by definition that is the
+  bug we want to surface, not hide. The IPC contract from `tauri-ui/src`
+  uses these exact 7 strings; any drift is a frontend bug. The `?` at
+  the call site converts the error into the existing `Result<(), String>`
+  return of the `start_engine` Tauri command, which the frontend already
+  handles. Verified caller list with grep — only one site to update.
+- *Scope*: Root cause is "stringly-typed FFI between TS and Rust". A
+  proper fix would mirror `NodeType` as a serde enum; logged for a future
+  loop. Today's change is the minimum that flips silent-success into
+  loud-error and is therefore strictly safer than the status quo.
+- *Priority*: ui_main off-by-one (loop 5 candidate) is real but UX-
+  coupled. C++ multi-output is latent. This is the right next pick.
+
+**Act:** `tauri-ui/src-tauri/src/main.rs`: changed `parse_engine_type` to
+return `Result<NodeType, String>`. Updated the single caller in
+`start_engine` to use `?`. Added a `tests` module with two tests:
+known-strings round-trip and unknown/empty/case-mismatched are rejected.
+
+**Verify:** `cargo test --workspace` → 17 lib tests + 2 new joduga-tauri
+tests, all green. `cargo fmt --check` clean. `cargo clippy --workspace
+--all-targets -- -D warnings` clean.

@@ -59,16 +59,16 @@ unsafe impl Sync for RunningEngine {}
 
 /* -- helpers ------------------------------------------------ */
 
-fn parse_engine_type(s: &str) -> NodeType {
+fn parse_engine_type(s: &str) -> Result<NodeType, String> {
     match s {
-        "Oscillator" => NodeType::Oscillator,
-        "Filter" => NodeType::Filter,
-        "Gain" => NodeType::Gain,
-        "Output" => NodeType::Output,
-        "Delay" => NodeType::Delay,
-        "Effects" => NodeType::Effects,
-        "Reverb" => NodeType::Reverb,
-        _ => NodeType::Gain,
+        "Oscillator" => Ok(NodeType::Oscillator),
+        "Filter" => Ok(NodeType::Filter),
+        "Gain" => Ok(NodeType::Gain),
+        "Output" => Ok(NodeType::Output),
+        "Delay" => Ok(NodeType::Delay),
+        "Effects" => Ok(NodeType::Effects),
+        "Reverb" => Ok(NodeType::Reverb),
+        other => Err(format!("Unknown engine_type \"{other}\"")),
     }
 }
 
@@ -128,7 +128,7 @@ fn start_engine(
         graph
             .add_node(Node {
                 id: n.id,
-                node_type: parse_engine_type(&n.engine_type),
+                node_type: parse_engine_type(&n.engine_type)?,
                 num_inputs: n.num_inputs,
                 num_outputs: n.num_outputs,
                 parameters: HashMap::new(),
@@ -236,4 +236,31 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_engine_type_known_strings() {
+        assert!(matches!(parse_engine_type("Oscillator"), Ok(NodeType::Oscillator)));
+        assert!(matches!(parse_engine_type("Filter"), Ok(NodeType::Filter)));
+        assert!(matches!(parse_engine_type("Gain"), Ok(NodeType::Gain)));
+        assert!(matches!(parse_engine_type("Output"), Ok(NodeType::Output)));
+        assert!(matches!(parse_engine_type("Delay"), Ok(NodeType::Delay)));
+        assert!(matches!(parse_engine_type("Effects"), Ok(NodeType::Effects)));
+        assert!(matches!(parse_engine_type("Reverb"), Ok(NodeType::Reverb)));
+    }
+
+    #[test]
+    fn parse_engine_type_rejects_unknown() {
+        // Used to silently coerce to NodeType::Gain, which masked frontend
+        // bugs as silent wrong-engine-type behaviour at runtime.
+        let err = parse_engine_type("NotARealType").expect_err("must not coerce");
+        assert!(err.contains("NotARealType"), "unexpected error: {err}");
+        assert!(parse_engine_type("").is_err());
+        // Case-sensitive — "oscillator" is not "Oscillator"
+        assert!(parse_engine_type("oscillator").is_err());
+    }
 }
