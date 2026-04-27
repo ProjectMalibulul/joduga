@@ -39,19 +39,23 @@ struct AudioEngineImpl
     std::vector<uint32_t> execution_order;                // stores node_ids
     uint32_t output_node_id = 0;
 
-    // Inter-node scratch buffers (indexed by slot)
+    // Inter-node scratch buffers, one per node *output* (not per node).
+    // Indexed by `output_buffer_offset[slot] + output_idx` so multi-output
+    // nodes get distinct buffers for each output port.
     std::vector<std::vector<float>> scratch_buffers;
+    std::vector<uint32_t> output_buffer_offset; // size == nodes.size()
 
     // Pre-built wiring  (slot indices, not node IDs)
     struct SlotConn
     {
         uint32_t from_slot;
+        uint32_t from_output;
         uint32_t to_slot;
         uint32_t to_input;
     };
     std::vector<SlotConn> slot_connections;
-    // Which slot is the output node (its scratch buffer is copied to ring)
-    int32_t output_feeder_slot = -1;
+    // Index into scratch_buffers that the output node fills (its output 0).
+    int32_t output_feeder_buffer = -1;
 
     // Lock-free queues (Rust-owned memory)
     const void *param_queue_buffer = nullptr;
@@ -177,12 +181,16 @@ static void audio_thread_main(AudioEngineImpl *e)
             for (const auto &c : e->slot_connections)
             {
                 if (c.to_slot == slot && c.to_input < MAX_AUDIO_INPUTS)
-                    inputs[c.to_input] = e->scratch_buffers[c.from_slot].data();
+                {
+                    uint32_t buf_idx = e->output_buffer_offset[c.from_slot] + c.from_output;
+                    inputs[c.to_input] = e->scratch_buffers[buf_idx].data();
+                }
             }
 
             float *outputs[MAX_AUDIO_OUTPUTS] = {};
+            uint32_t out_base = e->output_buffer_offset[slot];
             for (uint32_t i = 0; i < node->num_outputs; ++i)
-                outputs[i] = e->scratch_buffers[slot].data();
+                outputs[i] = e->scratch_buffers[out_base + i].data();
 
             node->process(inputs, outputs, e->block_size,
                           e->pending_params.data(), num_params);
@@ -191,7 +199,7 @@ static void audio_thread_main(AudioEngineImpl *e)
         e->sample_count.fetch_add(e->block_size, std::memory_order_release);
 
         // ── Copy output to ring buffer ───────────────────────────
-        if (e->output_ring_buffer && e->output_feeder_slot >= 0)
+        if (e->output_ring_buffer && e->output_feeder_buffer >= 0)
         {
             size_t oh = e->output_ring_head->load(std::memory_order_acquire);
             size_t ot = e->output_ring_tail->load(std::memory_order_acquire);
@@ -200,7 +208,7 @@ static void audio_thread_main(AudioEngineImpl *e)
             size_t free = cap - used - 1;
             uint32_t to_write = std::min(e->block_size, static_cast<uint32_t>(free));
 
-            const float *src = e->scratch_buffers[e->output_feeder_slot].data();
+            const float *src = e->scratch_buffers[e->output_feeder_buffer].data();
             for (uint32_t i = 0; i < to_write; ++i)
                 e->output_ring_buffer[(oh + i) & (cap - 1)] = src[i];
 
@@ -292,23 +300,48 @@ extern "C"
             auto tit = e->node_id_to_slot.find(c.to_node_id);
             if (fit == e->node_id_to_slot.end() || tit == e->node_id_to_slot.end())
                 continue;
+            // Drop edges whose source output index is out of range for the
+            // resolved C++ node — guards against descriptor/node disagreement.
+            uint32_t from_outs = e->nodes[fit->second]->num_outputs;
+            if (c.from_output_idx >= from_outs)
+            {
+                std::cerr << "[joduga] dropping edge: from_output_idx "
+                          << c.from_output_idx << " >= node num_outputs "
+                          << from_outs << "\n";
+                continue;
+            }
             e->slot_connections.push_back({static_cast<uint32_t>(fit->second),
+                                           c.from_output_idx,
                                            static_cast<uint32_t>(tit->second),
                                            c.to_input_idx});
         }
 
-        // Cache the output node's own slot so we copy its processed scratch
-        // buffer to the ring (not the raw feeder).
+        // Build per-output scratch buffer offsets and allocate one buffer per
+        // node output. Multi-output nodes used to alias all their outputs to
+        // a single per-slot scratch buffer; that silently corrupted audio the
+        // moment a node had num_outputs > 1.
+        e->output_buffer_offset.resize(e->nodes.size());
+        uint32_t total_outputs = 0;
+        for (size_t s = 0; s < e->nodes.size(); ++s)
         {
-            auto oit = e->node_id_to_slot.find(e->output_node_id);
-            if (oit != e->node_id_to_slot.end())
-                e->output_feeder_slot = static_cast<int32_t>(oit->second);
+            e->output_buffer_offset[s] = total_outputs;
+            total_outputs += e->nodes[s]->num_outputs;
         }
-
-        // Allocate scratch buffers
-        e->scratch_buffers.resize(e->nodes.size());
+        e->scratch_buffers.resize(total_outputs);
         for (auto &buf : e->scratch_buffers)
             buf.resize(e->block_size, 0.0f);
+
+        // Cache the buffer index of the output node's primary output (idx 0)
+        // so the ring-copy step doesn't need to recompute it per block.
+        {
+            auto oit = e->node_id_to_slot.find(e->output_node_id);
+            if (oit != e->node_id_to_slot.end() &&
+                e->nodes[oit->second]->num_outputs > 0)
+            {
+                e->output_feeder_buffer =
+                    static_cast<int32_t>(e->output_buffer_offset[oit->second]);
+            }
+        }
 
         // Store queue pointers
         e->param_queue_buffer = param_queue_buffer;

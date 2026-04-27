@@ -144,3 +144,45 @@ known-strings round-trip and unknown/empty/case-mismatched are rejected.
 **Verify:** `cargo test --workspace` → 17 lib tests + 2 new joduga-tauri
 tests, all green. `cargo fmt --check` clean. `cargo clippy --workspace
 --all-targets -- -D warnings` clean.
+
+## Loop 5 — C++ engine: per-output scratch buffers (remove multi-output aliasing)
+
+**Observe:** Loops 1-4 committed cleanly, 19 tests + lint green. Bootstrap
+issue #5: `audio_thread_main` set every `outputs[i]` for one node to
+`scratch_buffers[slot].data()`, so a node with num_outputs > 1 would
+silently overwrite output 0 when writing output 1. Companion bug:
+`SlotConn` did not carry `from_output_idx` at all, so even with separate
+output buffers there was no plumbing to route them.
+
+**Decide:** Three candidates: (a) full per-output scratch refactor + add
+from_output to SlotConn, (b) assert num_outputs <= 1 and document, (c)
+broader FFI ABI tests. (b) loses information and just defers the problem.
+(c) is testable but lower-priority. Pick (a): minimal, behaviorally
+identical for single-output (every existing C++ node hardcodes
+num_outputs=1), and unblocks future stereo / multi-output nodes.
+
+**Devil's advocate:**
+- Correctness: regression risk on single-output? Every implemented C++
+  node sets num_outputs=1; per-output offsets degenerate to one buffer
+  per node — identical data flow, different index. New edge sanity
+  check only drops edges that violate `from_output_idx < num_outputs`
+  which Rust-side add_edge already enforces against the descriptor.
+- Scope: real root cause is scratch buffer keyed only by slot, not by
+  port. Fixed at source.
+- Priority: no automated C++ engine test means structural-identity
+  reasoning is the best we have. Logged adding a Rust-side smoke test
+  as the next loop.
+
+**Act:** `cpp/src/audio_engine.cpp`:
+- Added `from_output` to `SlotConn`; populate from `c.from_output_idx`
+  with a bounds check against the resolved C++ node's num_outputs.
+- Replaced per-slot scratch_buffers with per-output buffers indexed via
+  new `output_buffer_offset[slot]` table; total size = sum of
+  node->num_outputs.
+- Renamed `output_feeder_slot` -> `output_feeder_buffer`, now an index
+  into the flat scratch_buffers array.
+- Updated audio thread to compute input/output pointers via
+  `output_buffer_offset[from_slot] + from_output` and `+ i`.
+
+**Verify:** C++ rebuilt cleanly via `cargo test --workspace` (build.rs
+invokes the cmake crate). 17 lib tests + 2 tauri tests pass. Lint clean.
