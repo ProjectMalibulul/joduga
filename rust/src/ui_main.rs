@@ -21,9 +21,11 @@ use joduga::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-// ── FNV-1a param hashes (must match C++ engine) ────────────────────────────
-const H_FREQ: u32 = 0x811C9DC5;
-const H_RES: u32 = 0x050C5D2E;
+// ── FNV-1a param hashes — re-exported from the canonical mirror table ──────
+// See `joduga::param_hash` for the full set; these aliases keep the file's
+// existing call sites compact.
+const H_FREQ: u32 = joduga::param_hash::FREQ;
+const H_RES: u32 = joduga::param_hash::RES;
 
 // ── Colors ──────────────────────────────────────────────────────────────────
 const BG: egui::Color32 = egui::Color32::from_rgb(18, 18, 24);

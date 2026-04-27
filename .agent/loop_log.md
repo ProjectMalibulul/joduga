@@ -186,3 +186,40 @@ num_outputs=1), and unblocks future stereo / multi-output nodes.
 
 **Verify:** C++ rebuilt cleanly via `cargo test --workspace` (build.rs
 invokes the cmake crate). 17 lib tests + 2 tauri tests pass. Lint clean.
+
+## Loop 6 — Centralize Rust mirror of cpp ParamHash table
+
+**Observe:** main.rs uses bare `0x811C_9DC5` hex literals for osc/filter
+freq updates; ui_main.rs declares its own private `H_FREQ`/`H_RES`
+constants (also bare hex). The C++ side has a rich ParamHash namespace
+(WAVEFORM_TYPE, FILTER_MODE, THRESHOLD, RATIO, etc.) with no Rust
+counterpart. Future Rust callers (or the existing main.rs) can drift
+silently from the C++ table — a typo on either side routes a parameter
+update into the wrong dispatch arm or gets dropped.
+
+**Decide:** Three candidates: (a) full Rust mirror module + tests +
+migrate existing call sites, (b) extract H_FREQ/H_RES constants to lib
+without the rest, (c) write an FFI integration test. (b) under-fixes —
+half the table stays missing. (c) requires running an audio device.
+Pick (a): pure Rust, deterministic, surfaces drift as unit-test failures,
+removes magic numbers from main.rs.
+
+**Devil's advocate:**
+- Correctness: numerical values copied from cpp/include/audio_node.h ─
+  test re-asserts canonical values so any future C++-side rename without
+  a Rust update fails CI loudly.
+- Scope: real risk is C++/Rust drift on add. Mitigation: a comment block
+  pointing both files at each other, plus the canonical-value test.
+- Priority: an FFI smoke test (next loop) is the only thing higher,
+  and it requires audio hardware to be useful.
+
+**Act:** New `rust/src/param_hash.rs` mirroring all 26 C++ ParamHash
+constants with disjoint-hash invariant test. Re-exported via
+`joduga::param_hash`. Replaced bare hex in main.rs with `param_hash::
+OSC_FREQUENCY` / `param_hash::FILTER_CUTOFF`. Replaced ui_main.rs
+local constants with re-exports of `joduga::param_hash::FREQ`/`RES`.
+
+**Verify:** 19 lib tests (was 17) — 2 new param_hash tests pass.
+cargo build --bins green. cargo fmt --check green. cargo clippy
+--all-targets -D warnings green. No call site behavior change ─
+constants are byte-identical to the literals they replaced.
