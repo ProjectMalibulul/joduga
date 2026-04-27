@@ -1367,3 +1367,14 @@ The Rust counterpart in rust/src/lockfree_queue.rs uses the canonical pattern: o
   - *Priority*: above the deferred MIDI consumer work (large feature) and the store.ts UI surface (frontend, not Rust).
 **ACT**: added `valid_node_ids: HashSet<u32>` to `RunningEngine`; populated at `start_engine`. set_param checks membership and returns a descriptive error.
 **Result**: workspace builds, all crate tests pass, engine_smoke 20/20, clippy clean.
+
+## Loop 40 — Reject graphs with a disconnected Output node
+**OBSERVE**: shadow_graph::validate() checked Output node existence and Output node *type*, but did not check that Output had at least one incoming edge. A graph with the Output disconnected passes validate, compiles, runs — and produces silence. The C++ engine sets `output_feeder_buffer = -1` (no feed) and the ring-write block at audio_engine.cpp line ~204 is skipped. UI shows "Engine started" with no diagnostic.
+**ORIENT**: priority-2/3 (silent failure on UX-critical path). Tiny check.
+**DECIDE**: add `edges.iter().any(|e| e.to_node_id == output_node_id)` after the type check; return descriptive error.
+**DEVIL**:
+  - *Correctness*: could a graph legitimately have a disconnected Output? No — the only outcome is silence, and a user wanting silence wouldn't start the engine.
+  - *Scope*: should we check all output ports of every node have *some* downstream consumer (i.e., dead-output detection)? No — leaving outputs unconnected is legitimate (A/B-test wiring, per-port multi-output nodes where some outputs are unused). Output node is the only special case.
+  - *Priority*: ahead of MIDI consumer (large feature) and store.ts UI surface (frontend).
+**ACT**: added incoming-edge check. Added regression test `validate_rejects_disconnected_output`.
+**Result**: 40/40 lib tests pass (+1), 20/20 engine_smoke pass, clippy clean.

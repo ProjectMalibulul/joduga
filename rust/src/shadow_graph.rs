@@ -165,6 +165,21 @@ impl ShadowGraph {
             }
         }
 
+        // The audio output node must have at least one incoming edge.
+        // Without this the C++ engine's `output_feeder_buffer` falls
+        // back to its sentinel and the ring-write block in
+        // audio_engine.cpp is skipped — the engine starts, claims to
+        // be running, and produces silence with no diagnostic. Catch
+        // it here so the user gets a clear error at start time rather
+        // than debugging a silent engine.
+        let output_has_input = self.edges.iter().any(|e| e.to_node_id == self.output_node_id);
+        if !output_has_input {
+            return Err(format!(
+                "Output node {} has no incoming edges — connect at least one source",
+                self.output_node_id
+            ));
+        }
+
         // white = unvisited, grey = in recursion stack, black = done
         let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
 
@@ -447,5 +462,16 @@ mod tests {
         g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 1 })
             .unwrap();
         assert_eq!(g.edges.len(), 2);
+    }
+
+    #[test]
+    fn validate_rejects_disconnected_output() {
+        // Output node typed correctly but no edge feeds into it. The
+        // C++ engine would silently produce silence — catch at validate.
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g.validate().expect_err("must fail with no edge to output");
+        assert!(err.contains("no incoming edges"), "unexpected error: {err}");
     }
 }
