@@ -223,3 +223,45 @@ local constants with re-exports of `joduga::param_hash::FREQ`/`RES`.
 cargo build --bins green. cargo fmt --check green. cargo clippy
 --all-targets -D warnings green. No call site behavior change ─
 constants are byte-identical to the literals they replaced.
+
+## Loop 7 — Fix ui_main.rs Output node resolution (and lift mode hashes)
+
+**Observe:** Three tightly-coupled bugs in the egui-ui (default-feature)
+`start_engine` path:
+1. `ShadowGraph::new(max_nodes as u32)` passed `nodes.len() + 1` as the
+   `output_node_id` arg — semantically wrong; with the loop-2 validate
+   tightening this now hard-fails on any normal user graph (Output node
+   id rarely equals `nodes.len()+1`).
+2. AudioEngineWrapper got a *separately* computed `output_id` that
+   silently fell back to `0` when no Output node existed — engine then
+   reads from arbitrary node 0 instead of erroring.
+3. The mode_hash dispatch table (Oscillator → 0xAD, Filter → 0xBD, etc.)
+   was hand-typed hex instead of the loop-6 param_hash constants.
+
+**Decide:** Three candidates: (a) fix all three together — one helper
+resolves Output id, used both for ShadowGraph::new and the wrapper;
+swap mode_hash to param_hash; add tests; (b) fix only #1; (c) fix only
+the silent-fallback. (b)/(c) leave the same class of bug in another
+spot. Pick (a).
+
+**Devil's advocate:**
+- Correctness: helper rejects "no Output" and "multiple Output" cases
+  with explicit messages — both surface as visible status text instead
+  of a silent wrong-engine-state. ShadowGraph::new and the wrapper now
+  receive the same id so they cannot disagree.
+- Scope: real root cause is "id was guessed from container length";
+  fixed at source by deriving from the Output node itself. Mode hashes
+  were a separate latent drift risk also lifted to the canonical table.
+- Priority: this is the user-visible default-feature start path —
+  highest priority remaining after loops 1-6.
+
+**Act:** ui_main.rs:
+- New `resolve_output_node_id(nodes, catalog) -> Result<u32, String>`
+  helper (rejects missing/duplicate Output and bad template indices).
+- start_engine resolves output_id once and reuses it.
+- mode_hash literals replaced with `joduga::param_hash::*` references.
+- New `tests` mod with 4 unit tests covering happy path, missing
+  Output, duplicate Outputs, and dangling template_idx.
+
+**Verify:** cargo test --bins → 4/4 ui_main tests pass; lib still 19/19.
+fmt clean. clippy --all-targets -D warnings clean.

@@ -1132,8 +1132,15 @@ impl JodugaApp {
             return;
         }
 
-        let max_nodes = self.nodes.len() + 1;
-        let mut shadow = ShadowGraph::new(max_nodes as u32);
+        let output_id = match resolve_output_node_id(&self.nodes, &self.catalog) {
+            Ok(id) => id,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+
+        let mut shadow = ShadowGraph::new(output_id);
 
         for n in &self.nodes {
             let tmpl = &self.catalog[n.template_idx];
@@ -1174,13 +1181,6 @@ impl JodugaApp {
             }
         };
 
-        let output_id = self
-            .nodes
-            .iter()
-            .find(|n| matches!(self.catalog[n.template_idx].engine_type, NodeType::Output))
-            .map(|n| n.id as u32)
-            .unwrap_or(0);
-
         match AudioEngineWrapper::new(
             compiled_nodes,
             compiled_edges,
@@ -1206,11 +1206,11 @@ impl JodugaApp {
                     }
                     // Send mode/subtype initialization param
                     let mode_hash: Option<u32> = match tmpl.engine_type {
-                        NodeType::Oscillator => Some(0xAD), // WAVEFORM_TYPE
-                        NodeType::Filter => Some(0xBD),     // FILTER_MODE
-                        NodeType::Gain => Some(0xCF),       // GAIN_MODE
-                        NodeType::Delay => Some(0xCD),      // DELAY_MODE
-                        NodeType::Effects => Some(0xCE),    // EFFECTS_MODE
+                        NodeType::Oscillator => Some(joduga::param_hash::WAVEFORM_TYPE),
+                        NodeType::Filter => Some(joduga::param_hash::FILTER_MODE),
+                        NodeType::Gain => Some(joduga::param_hash::GAIN_MODE),
+                        NodeType::Delay => Some(joduga::param_hash::DELAY_MODE),
+                        NodeType::Effects => Some(joduga::param_hash::EFFECTS_MODE),
                         _ => None,
                     };
                     if let Some(hash) = mode_hash {
@@ -2016,4 +2016,85 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(JodugaApp::new()))
         }),
     )
+}
+
+/// Resolve which `GraphNode` represents the audio Output of the graph.
+///
+/// Returns the node's id (cast to `u32`, the type used throughout the
+/// engine FFI). Fails fast with a descriptive message if there is no
+/// Output node — the previous silent `unwrap_or(0)` fallback would route
+/// the engine to read whatever node happened to have id 0, which may
+/// not even exist after deletions.
+fn resolve_output_node_id(nodes: &[GraphNode], catalog: &[NodeTemplate]) -> Result<u32, String> {
+    let mut found: Option<u32> = None;
+    for n in nodes {
+        let tmpl = catalog.get(n.template_idx).ok_or_else(|| {
+            format!("Node {} references unknown template {}", n.id, n.template_idx)
+        })?;
+        if matches!(tmpl.engine_type, NodeType::Output) {
+            if found.is_some() {
+                return Err("Multiple Output nodes — keep only one".into());
+            }
+            found = Some(n.id as u32);
+        }
+    }
+    found.ok_or_else(|| "No Output node — add one to start the engine".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_node(id: usize, template_idx: usize) -> GraphNode {
+        GraphNode {
+            id,
+            template_idx,
+            param_values: vec![],
+            world_pos: egui::Pos2::ZERO,
+            input_port_screen: vec![],
+            output_port_screen: vec![],
+        }
+    }
+
+    fn make_template(engine_type: NodeType) -> NodeTemplate {
+        NodeTemplate {
+            name: "test",
+            category: "test",
+            icon: "?",
+            color: egui::Color32::WHITE,
+            num_inputs: 0,
+            num_outputs: 0,
+            engine_type,
+            subtype: 0,
+            params: vec![],
+        }
+    }
+
+    #[test]
+    fn resolve_output_picks_unique_output_node() {
+        let cat = vec![make_template(NodeType::Oscillator), make_template(NodeType::Output)];
+        let nodes = vec![make_node(0, 0), make_node(7, 1)];
+        assert_eq!(resolve_output_node_id(&nodes, &cat).unwrap(), 7);
+    }
+
+    #[test]
+    fn resolve_output_errors_when_missing() {
+        let cat = vec![make_template(NodeType::Oscillator)];
+        let nodes = vec![make_node(0, 0)];
+        assert!(resolve_output_node_id(&nodes, &cat).unwrap_err().contains("No Output node"));
+    }
+
+    #[test]
+    fn resolve_output_errors_on_duplicate_outputs() {
+        let cat = vec![make_template(NodeType::Output)];
+        let nodes = vec![make_node(0, 0), make_node(1, 0)];
+        assert!(resolve_output_node_id(&nodes, &cat).unwrap_err().contains("Multiple Output"));
+    }
+
+    #[test]
+    fn resolve_output_errors_on_bad_template_idx() {
+        let cat = vec![make_template(NodeType::Output)];
+        let nodes = vec![make_node(0, 99)];
+        assert!(resolve_output_node_id(&nodes, &cat).unwrap_err().contains("unknown template"));
+    }
 }
