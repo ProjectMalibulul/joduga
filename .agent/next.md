@@ -1,12 +1,10 @@
-# Next loop seed (loop 33)
+# Next loop seed (loop 34)
 
-All five primary DSP node types (oscillator, filter, gain, delay, effects, reverb) now have the canonical NaN/Inf defense pattern. Final-stage ring write hard-clamps to ±1.0. Priority-1 silent-corruption surface across the audio path is exhausted to the best of current knowledge.
+DSP correctness surface scrubbed. Time to harden the host/middleware boundary.
 
-Re-prioritize to the long-deferred priority-4 logic bug:
+**Loop 34 candidate**: tauri-ui/src-tauri/src/main.rs `start_engine` Tauri command at lines 184/196 wraps `engine.set_param(...)` with `let _ = ...`, silently discarding errors. The set_param queue is finite (lock-free SPSC); when the UI smashes a knob faster than the audio thread drains it, errors get swallowed and the user sees no feedback. Surface the failure to the UI as a structured warning return so the React store can display "param dropped" diagnostics.
 
-**Loop 33 candidate**: cpp/include/nodes/effects.h `process_overdrive` uses raw `tone_lp` instead of the tone-blended `tone_lp*tone + distorted*(1-tone)` form that `process_distortion` uses. At tone=0 the overdrive output is silent (full LP only, no distorted signal). Fix to mirror distortion's blend.
-
-**Backup candidates**:
-- Tauri `start_engine` (tauri-ui/src-tauri/src/main.rs:184,196) silently discards `set_param` errors via `let _ = ...`. UI knob updates dropped to queue backpressure are invisible. Surface to UI.
-- audio_engine.cpp param-drain loop memory-ordering audit — verify Acquire/Release pairing and that `pending_params` cap is genuinely structural.
-- MIDI input bounds re-audit (loop 23 era).
+**Backup**:
+- audio_engine.cpp param-drain memory-ordering audit.
+- midi_input.rs bounds + reconnect race.
+- shadow_graph.rs cycle detection: verify Kahn implementation handles disconnected components correctly.

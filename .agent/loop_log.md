@@ -1285,3 +1285,14 @@ remaining priority-1 candidates:
   - *Priority*: deferred overdrive tone-blend bug again. Justified — it's priority-4 and this is priority-1.
 **ACT**: oscillator.h: isfinite early-return at set_param; WAVEFORM_TYPE clamped to [0, ADDITIVE=12]; rolloff clamped to [0.0, 8.0]. Added smoke test `oscillator_node_rejects_rogue_params_and_rolloff` that pumps NaN/Inf into WAVEFORM_TYPE/OSC_FREQUENCY/rolloff while holding ADDITIVE waveform, then cycles all 13 waveforms — asserts every sample finite and ≤1.0+ε after the final-stage clamp.
 **Result**: 19/19 smoke tests pass, clippy clean.
+
+## Loop 33 — Overdrive tone-blend bug
+**OBSERVE**: process_overdrive in effects.h fed `tone_lp * distort_mix` into the wet path. process_distortion (the canonical reference for the same control set) does `shaped = tone_lp*tone + distorted*(1-tone)` then mixes shaped into wet. The IIR coeff for tone_lp is `tone` itself, so at tone=0 tone_lp NEVER updates (stays at its 0.0 init), and at distort_mix=1.0 the wet path is identically silent — overdrive bypasses to dry input at every distort_mix<1, and to silence at 1.
+**ORIENT**: priority-4 logic bug — wrong output for valid input on a documented user-facing control. Deferred since loop 29; no priority-1/2/3 surfaces remain unaddressed in nodes audited so far.
+**DECIDE**: mirror process_distortion's blend exactly. Add `shaped = tone_lp*tone + distorted*(1-tone)` and mix `shaped` instead of `tone_lp`.
+**DEVIL**:
+  - *Correctness*: the new blend at tone=1 collapses to `tone_lp`, matching the old behavior exactly there — backward-compat preserved at the bright extreme. At tone=0 it produces the raw distorted signal, which is the expected "bright/no-tone-rolloff" position. Coefficient pinning at tone=1 still reaches steady state of distorted via the `tone_lp += 1.0*(distorted - tone_lp)` recurrence (one-block convergence).
+  - *Scope*: are other modes affected? Only distortion (already correct) and overdrive share tone_lp. No cross-contamination.
+  - *Priority*: loop 32 closed the last priority-1 surface in primary nodes. This is now the highest-leverage outstanding correctness item.
+**ACT**: edited overdrive blend to match distortion. Added smoke test that drives a 440Hz sine at drive=8, distort_mix=1.0, tone=0 and asserts RMS>0.05 (pre-fix RMS would be ~0). Bounded by final-stage clamp.
+**Result**: 20/20 smoke tests pass, clippy clean.

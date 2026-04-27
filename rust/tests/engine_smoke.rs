@@ -1118,3 +1118,67 @@ fn oscillator_node_rejects_rogue_params_and_rolloff() {
 
     eng.stop().expect("stop");
 }
+
+/// Loop 33 regression: EffectsNode::process_overdrive blended
+/// `tone_lp * distort_mix` into the wet path instead of the
+/// tone-blended `tone_lp*tone + distorted*(1-tone)` form that
+/// process_distortion uses. At tone=0 the LP coefficient is zero,
+/// so tone_lp never moves from its initial 0.0 — making the wet
+/// path silent at distort_mix=1.0 and effectively bypassing the
+/// effect (output = dry signal at any intermediate mix). This pins
+/// that with EFFECTS_MODE=OVERDRIVE, drive=high, distort_mix=1.0,
+/// tone=0, the output carries non-trivial energy from the
+/// distorted signal rather than collapsing to silence.
+#[test]
+fn overdrive_tone_zero_full_wet_carries_distorted_signal() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Effects, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 1, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("freq");
+    eng.set_param(0, param_hash::WAVEFORM_TYPE, 0.0).expect("sine");
+
+    eng.set_param(1, param_hash::EFFECTS_MODE, 1.0).expect("overdrive mode"); // OVERDRIVE
+    eng.set_param(1, 0xE4, 8.0).expect("drive");
+    eng.set_param(1, 0xE5, 0.0).expect("tone=0 (bright path)");
+    eng.set_param(1, 0xE3, 1.0).expect("distort_mix=1.0 (full wet)");
+
+    eng.start().expect("start");
+    thread::sleep(Duration::from_millis(150));
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "no samples");
+
+    let mut max_abs = 0.0_f32;
+    let mut energy = 0.0_f32;
+    for &s in &buf[..n] {
+        assert!(s.is_finite(), "non-finite overdrive output");
+        max_abs = max_abs.max(s.abs());
+        energy += s * s;
+    }
+    let rms = (energy / n as f32).sqrt();
+    // Pre-fix at distort_mix=1.0, tone=0 the wet path was tone_lp*1.0,
+    // tone_lp stayed 0, so output was identically silent. RMS<1e-4 was
+    // the failing condition. Post-fix the distorted signal flows.
+    assert!(
+        rms > 0.05 && max_abs > 0.1,
+        "overdrive went silent at tone=0 / mix=1.0: rms={rms} max_abs={max_abs}"
+    );
+    assert!(max_abs <= 1.0 + 1e-6, "exceeded final-stage clamp: {max_abs}");
+
+    eng.stop().expect("stop");
+}

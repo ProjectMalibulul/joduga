@@ -249,7 +249,15 @@ private:
             tone_lp += tone * (distorted - tone_lp);
             if (!std::isfinite(tone_lp))
                 tone_lp = 0.0f;
-            float y = in[i] * (1.0f - distort_mix) + tone_lp * distort_mix;
+            // Match process_distortion's tone-blend: at tone=0 use
+            // raw distorted signal (bright); at tone=1 use the
+            // low-passed signal (dark). Previously we fed only
+            // `tone_lp` into the dry/wet mix, so at tone=0 the
+            // wet path silently emitted whatever stale value was
+            // in tone_lp (initially zero), making the overdrive
+            // effectively bypass to the dry signal until tone>0.
+            float shaped = tone_lp * tone + distorted * (1.0f - tone);
+            float y = in[i] * (1.0f - distort_mix) + shaped * distort_mix;
             if (!std::isfinite(y))
                 y = 0.0f;
             out[i] = y;
