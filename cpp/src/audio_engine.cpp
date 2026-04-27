@@ -426,7 +426,17 @@ extern "C"
         auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
         if (!e)
             return -1;
-        e->is_running.store(true, std::memory_order_release);
+        // Atomically transition stopped → running. Without this CAS, a
+        // second start() while the first thread is still running would
+        // move-assign a new std::thread over a still-joinable handle,
+        // calling std::terminate per the C++ spec — a crash, not a noop.
+        bool expected = false;
+        if (!e->is_running.compare_exchange_strong(
+                expected, true,
+                std::memory_order_acq_rel, std::memory_order_acquire))
+        {
+            return -2; // already running
+        }
         e->audio_thread = std::thread(audio_thread_main, e);
         return 0;
     }
@@ -436,7 +446,14 @@ extern "C"
         auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
         if (!e)
             return -1;
-        e->is_running.store(false, std::memory_order_release);
+        // Symmetric CAS: only one stop() can win the join().
+        bool expected = true;
+        if (!e->is_running.compare_exchange_strong(
+                expected, false,
+                std::memory_order_acq_rel, std::memory_order_acquire))
+        {
+            return 0; // already stopped — idempotent no-op
+        }
         if (e->audio_thread.joinable())
             e->audio_thread.join();
         return 0;

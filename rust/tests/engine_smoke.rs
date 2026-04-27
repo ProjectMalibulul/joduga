@@ -330,3 +330,33 @@ fn cpu_load_permil_advances_under_load() {
     // 4000-permil cap that the C++ side clamps to.
     assert!(load > 0 && load < 4000, "cpu_load_permil out of expected range: {load}");
 }
+
+/// Calling audio_engine_start while the engine is already running
+/// previously move-assigned a fresh std::thread over a joinable handle,
+/// triggering std::terminate (i.e. an immediate process crash). The C
+/// ABI now atomically transitions stopped→running and returns -2 if
+/// the engine is already running. Verify via the Rust wrapper, which
+/// surfaces the non-zero return code as an Err.
+#[test]
+fn double_start_is_safe_and_reports_error() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+    let mut graph = ShadowGraph::new(1);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 1, 48_000, 256, 0).expect("init");
+
+    eng.start().expect("first start ok");
+    let second = eng.start();
+    assert!(second.is_err(), "second start must return Err, got {second:?}");
+
+    // Stop must still succeed exactly once.
+    eng.stop().expect("stop ok");
+    // Second stop should be a successful no-op (idempotent).
+    eng.stop().expect("idempotent stop");
+}

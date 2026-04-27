@@ -721,3 +721,45 @@ heaviest available DSP nodes.
 
 **Verify:** 38 lib + 5 ui_main + 6 smoke = 49 joduga tests pass. Ran
 in ~0.62 s including the 200 ms wall-time wait. fmt + clippy clean.
+
+## Loop 21 — audio_engine_start: prevent double-start std::terminate crash
+
+**Observe:** While auditing audio_engine_wrapper for safety holes,
+inspected audio_engine_start (cpp:424). The implementation:
+```
+e->is_running.store(true, ...);
+e->audio_thread = std::thread(audio_thread_main, e);
+```
+If called when already running, the move-assignment over a *joinable*
+std::thread invokes std::terminate per the C++ standard. That is a
+priority-1 latent crash. Currently the Rust UI calls start() once
+during init, but any future "restart engine" or "reload graph" feature
+would hit this. audio_engine_stop is symmetric — calling stop twice on
+a freshly stopped engine attempts join() on a non-joinable thread,
+which is a no-op only because of the `joinable()` check.
+
+**Decide:** Replace the unconditional store with compare_exchange_strong
+to atomically transition stopped↔running. Start returns -2 if already
+running; stop is idempotent and returns 0 if already stopped. Add a
+Rust integration test that calls start() twice and asserts the second
+errors, and confirms double-stop is safe.
+
+**Devil's advocate:**
+- Correctness: CAS gives single-winner semantics. Memory order
+  acq_rel for success means the audio thread sees the transition
+  before the std::thread launch, and on the stop path the join() is
+  ordered after the false→true transition fails for losers.
+- Scope: this IS the cause; the previous unwrap-style store was the
+  primitive. Stop's symmetric CAS prevents a future second-stopper
+  from racing the joiner.
+- Priority: priority-1 (process crash via std::terminate). Closing
+  this matters even if no current caller triggers it — defense in depth
+  at the C ABI boundary, exposed to any host.
+
+**Act:**
+- cpp/src/audio_engine.cpp::audio_engine_start: CAS + return -2.
+- cpp/src/audio_engine.cpp::audio_engine_stop: CAS + idempotent no-op.
+- rust/tests/engine_smoke.rs::double_start_is_safe_and_reports_error.
+
+**Verify:** cmake build clean. 38 lib + 5 ui_main + 7 smoke = 50
+joduga tests pass. fmt + clippy clean.
