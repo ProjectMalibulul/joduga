@@ -1,36 +1,12 @@
-# Next loop seed (loop 32)
+# Next loop seed (loop 33)
 
-## Primary target
-Re-OBSERVE `cpp/src/audio_engine.cpp` for any remaining
-RT-discipline holes:
-- allocations on the audio thread (vector reserve, push_back,
-  string ops, std::function captures)
-- syscalls (any iostream, fprintf, mutex lock, sleep)
-- the per-node param-update apply path: does
-  `apply_pending_params` allocate or take locks?
+All five primary DSP node types (oscillator, filter, gain, delay, effects, reverb) now have the canonical NaN/Inf defense pattern. Final-stage ring write hard-clamps to ±1.0. Priority-1 silent-corruption surface across the audio path is exhausted to the best of current knowledge.
 
-## Secondary target
-`cpp/include/nodes/oscillator.h` `process()` — even after loop 23
-clamp the AM/FM modulation scratch path could produce non-finite
-intermediates if `phase_inc * sample_rate` integer-overflows at
-extreme frequency settings, or if the multiplicative AM stage
-applies an NaN modulator for one sample before the loop-26-style
-scrub catches up. Add per-sample output isfinite check on osc
-output.
+Re-prioritize to the long-deferred priority-4 logic bug:
 
-## Tertiary target (priority-4 cleanup)
-`cpp/include/nodes/effects.h` `process_overdrive` tone-blend bug
-(deferred from loops 29 & 30): wet path uses raw `tone_lp`
-instead of the tone-blended `tone_lp*tone + distorted*(1-tone)`.
-At tone=0 the wet path silences entirely.
+**Loop 33 candidate**: cpp/include/nodes/effects.h `process_overdrive` uses raw `tone_lp` instead of the tone-blended `tone_lp*tone + distorted*(1-tone)` form that `process_distortion` uses. At tone=0 the overdrive output is silent (full LP only, no distorted signal). Fix to mirror distortion's blend.
 
-## Pattern check
-After loop 32 we will have hardened all 6 node types + the engine
-ring boundary. The remaining surface area is:
-  - the Rust→C++ FFI boundary (validate ParamUpdateCmd before
-    enqueue?)
-  - the cpal callback in `audio_engine_wrapper.rs` (does it scrub
-    again before writing to the cpal buffer? Probably redundant
-    after loop 31 but worth checking)
-  - the MIDI input path (`midi_input.rs`) — note-on velocity
-    could be 0 unexpectedly, or out-of-range note numbers
+**Backup candidates**:
+- Tauri `start_engine` (tauri-ui/src-tauri/src/main.rs:184,196) silently discards `set_param` errors via `let _ = ...`. UI knob updates dropped to queue backpressure are invisible. Surface to UI.
+- audio_engine.cpp param-drain loop memory-ordering audit — verify Acquire/Release pairing and that `pending_params` cap is genuinely structural.
+- MIDI input bounds re-audit (loop 23 era).

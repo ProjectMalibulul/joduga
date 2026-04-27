@@ -1054,3 +1054,67 @@ fn engine_final_stage_clamps_output_to_unity() {
 
     eng.stop().expect("stop");
 }
+
+/// Loop 32 regression: OscillatorNode set_param had no isfinite
+/// guard, used `waveform = static_cast<int>(value)` for
+/// WAVEFORM_TYPE (NaN→int UB), and stored `rolloff` completely
+/// unclamped — including -1.0 which causes divide-by-zero in the
+/// additive synth path (`amp /= (1.0f + rolloff)`). This pins
+/// finite, bounded oscillator output under a NaN/Inf parameter
+/// storm and also exercises the additive synth with the rogue
+/// rolloff = -1.0 that would have generated Inf samples.
+#[test]
+fn oscillator_node_rejects_rogue_params_and_rolloff() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(1);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 1, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 220.0).expect("freq");
+
+    // ADDITIVE waveform = 12.
+    eng.set_param(0, param_hash::WAVEFORM_TYPE, 12.0).expect("additive");
+
+    // Rogue values — set_param's isfinite early-return must drop them.
+    eng.set_param(0, param_hash::WAVEFORM_TYPE, f32::NAN).expect("NaN waveform");
+    eng.set_param(0, param_hash::WAVEFORM_TYPE, 1.0e9).expect("huge waveform");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, f32::INFINITY).expect("Inf freq");
+    // ROLLOFF hash = 0xAC. Send -1.0 (the divide-by-zero point) and NaN.
+    eng.set_param(0, 0xAC, -1.0).expect("rolloff -1");
+    eng.set_param(0, 0xAC, f32::NAN).expect("rolloff NaN");
+    eng.set_param(0, 0xAC, -1.0e9).expect("rolloff hugely negative");
+
+    eng.start().expect("start");
+    thread::sleep(Duration::from_millis(150));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "no samples after additive rogue-param storm");
+    let mut max_abs = 0.0_f32;
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} non-finite ({s}) in additive osc");
+        max_abs = max_abs.max(s.abs());
+    }
+    assert!(max_abs <= 1.0 + 1e-6, "additive osc output exceeded final-stage clamp: {max_abs}");
+
+    // Cycle through every waveform after the storm.
+    for w in 0..=12 {
+        eng.set_param(0, param_hash::WAVEFORM_TYPE, w as f32).expect("waveform");
+        thread::sleep(Duration::from_millis(30));
+        let n = ring.read(&mut buf);
+        for (i, &s) in buf[..n].iter().enumerate() {
+            assert!(s.is_finite(), "waveform {w} sample {i} non-finite ({s})");
+        }
+    }
+
+    eng.stop().expect("stop");
+}

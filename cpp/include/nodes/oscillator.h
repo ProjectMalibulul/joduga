@@ -76,13 +76,26 @@ public:
 
     void set_param(uint32_t param_hash, float value) override
     {
+        if (!std::isfinite(value))
+            return;
         if (param_hash == ParamHash::OSC_FREQUENCY || param_hash == ParamHash::FREQ)
         {
             target_frequency = std::fmax(0.01f, std::fmin(value, 20000.0f));
         }
         else if (param_hash == ParamHash::WAVEFORM_TYPE)
         {
-            waveform = static_cast<int>(value);
+            // Guard against `static_cast<int>(NaN)` UB (handled by
+            // the early-return) and clamp to the declared enum
+            // range. The process() switch has a `default: SINE`
+            // fall-through so out-of-range was not silently
+            // bypassing processing, but the cast itself is UB on
+            // non-finite values which the early-return now blocks.
+            int w = static_cast<int>(value);
+            if (w < 0)
+                w = 0;
+            else if (w > ADDITIVE)
+                w = ADDITIVE;
+            waveform = w;
         }
         else if (param_hash == ParamHash::DUTY_CYCLE)
         {
@@ -131,7 +144,14 @@ public:
         }
         else if (param_hash == 0xACu)
         { // rolloff
-            rolloff = value;
+            // Was completely unclamped. `rolloff = -1.0` causes
+            // divide-by-zero in the additive synth path
+            // (`amp /= (1.0f + rolloff)`); rolloff < -1 produces
+            // a sign-flipping Inf-pump as `amp` is repeatedly
+            // divided by a negative number with magnitude < 1.
+            // Standard rolloff curves are positive in [0, ~4];
+            // clamp generously.
+            rolloff = std::fmax(0.0f, std::fmin(value, 8.0f));
         }
     }
 

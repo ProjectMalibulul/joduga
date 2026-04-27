@@ -1274,3 +1274,14 @@ remaining priority-1 candidates:
   (b) Look at `audio_engine.cpp` for other RT-discipline holes
       (allocations, mutexes, syscall paths).
   (c) Then drop to priority-4: overdrive tone-blend bug.
+
+## Loop 32 — Oscillator NaN/Inf param hardening + rolloff clamp
+**OBSERVE**: oscillator.h was missed in loops 23-24 hardening pass — no isfinite guard at set_param entry, `waveform = static_cast<int>(value)` is NaN→int UB, and `rolloff = value;` totally unclamped. Combined with `amp /= (1.0f + rolloff)` at the additive synth (line 258), rolloff=-1 is divide-by-zero, rolloff<-1 is sign-flipping Inf-pump.
+**ORIENT**: priority-1 silent corruption — UI knob updates can deliver any f32 value, including NaN/Inf, and the additive waveform is reachable via WAVEFORM_TYPE=12.
+**DECIDE**: add the canonical defense pattern (isfinite early-return + WAVEFORM_TYPE clamp) and clamp rolloff to [0, 8].
+**DEVIL**:
+  - *Correctness*: clamping rolloff to [0, 8] forecloses negative rolloff curves — but negative rolloff would amplify higher harmonics in additive synth, which in combination with wide harmonic counts would explode amplitude even before reaching -1; positive-only is the only safe range.
+  - *Scope*: are there other oscillator state vars unclamped? Reviewed — frequency/detune/FM/AM/sub_level were already clamped in loops 23-24. rolloff was the only survivor.
+  - *Priority*: deferred overdrive tone-blend bug again. Justified — it's priority-4 and this is priority-1.
+**ACT**: oscillator.h: isfinite early-return at set_param; WAVEFORM_TYPE clamped to [0, ADDITIVE=12]; rolloff clamped to [0.0, 8.0]. Added smoke test `oscillator_node_rejects_rogue_params_and_rolloff` that pumps NaN/Inf into WAVEFORM_TYPE/OSC_FREQUENCY/rolloff while holding ADDITIVE waveform, then cycles all 13 waveforms — asserts every sample finite and ≤1.0+ε after the final-stage clamp.
+**Result**: 19/19 smoke tests pass, clippy clean.
