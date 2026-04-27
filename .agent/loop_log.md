@@ -473,3 +473,35 @@ test in the same module.
 
 **Verify:** 26 lib + 5 ui_main + 1 smoke = 32 joduga tests. fmt +
 clippy clean.
+
+## Loop 14 — ShadowGraph dfs_cycle phantom-node fallback
+
+**Observe:** shadow_graph.rs:168 had
+`match color.get(&next).copied().unwrap_or(0)` inside the cycle-detection
+DFS. add_edge validates both endpoints, but `nodes`/`edges` are pub —
+external code can splice an Edge directly into `edges` referencing a
+node that isn't in the node map. The unwrap_or(0) silently treats such
+phantom endpoints as WHITE and recurses into them, growing the color
+map past the node count and producing nonsensical cycle reports
+(or none) for malformed graphs that the engine then refuses.
+
+**Decide:** Two-part fix. Add edge endpoint validation in validate()
+(every `from`/`to` must be a known node), then upgrade the dfs's
+unwrap_or(0) to .expect() naming the now-true invariant. Two new tests
+exercise the validation directly via the pub `edges` field.
+
+**Devil's advocate:**
+- Correctness: validate() now does an O(E) endpoint scan. Cheap; the
+  cycle DFS already does O(V+E). No regression for valid graphs.
+- Scope: the deeper issue is the pub fields. Making them private would
+  be a larger refactor; the current fix at least guarantees compile()
+  rejects malformed graphs at the validate() boundary.
+- Priority: priority-1 — current behaviour is silent acceptance of a
+  graph the engine will later mishandle.
+
+**Act:** rust/src/shadow_graph.rs::validate — added edge endpoint
+loop. dfs_cycle — replaced unwrap_or(0) with .expect() naming the
+invariant. Tests: validate_rejects_edge_with_unknown_source_node,
+validate_rejects_edge_with_unknown_target_node.
+
+**Verify:** 28 lib tests (was 26). fmt + clippy clean.

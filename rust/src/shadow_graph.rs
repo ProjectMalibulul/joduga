@@ -140,6 +140,19 @@ impl ShadowGraph {
             return Err(format!("Output node {} is not present in the graph", self.output_node_id));
         }
 
+        // ShadowGraph::{nodes, edges} are pub, so a caller can splice an
+        // edge directly into `edges` bypassing add_edge's endpoint check.
+        // Validate edge endpoints here so the cycle DFS below can rely on
+        // the invariant that every adjacency neighbour is a known node.
+        for e in &self.edges {
+            if !self.nodes.contains_key(&e.from_node_id) {
+                return Err(format!("Edge references missing source node {}", e.from_node_id));
+            }
+            if !self.nodes.contains_key(&e.to_node_id) {
+                return Err(format!("Edge references missing target node {}", e.to_node_id));
+            }
+        }
+
         // white = unvisited, grey = in recursion stack, black = done
         let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
 
@@ -165,7 +178,13 @@ impl ShadowGraph {
         color.insert(node, 1); // grey
         if let Some(neighbours) = adj.get(&node) {
             for &next in neighbours {
-                match color.get(&next).copied().unwrap_or(0) {
+                // Invariant: validate() guarantees every edge endpoint is a
+                // known node, so `next` is always present in `color`.
+                let c = *color.get(&next).expect(
+                    "ShadowGraph invariant broken: dfs_cycle reached a node \
+                     not in the color map (validate() should have caught this)",
+                );
+                match c {
                     1 => return Err("Graph contains a cycle".into()),
                     0 => Self::dfs_cycle(next, adj, color)?,
                     _ => {} // black — already finished
@@ -334,6 +353,31 @@ mod tests {
         g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
         let err = g.validate().expect_err("missing output must fail");
         assert!(err.contains("Output node 99"), "unexpected error: {err}");
+    }
+
+    /// Edges spliced in directly (bypassing add_edge) that reference
+    /// nodes which aren't in `nodes` must be rejected. Otherwise the
+    /// cycle DFS would silently treat them as separate, and the C++
+    /// engine would later be handed a connection list it cannot resolve.
+    #[test]
+    fn validate_rejects_edge_with_unknown_source_node() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        // Splice past add_edge's validation:
+        g.edges.push(Edge { from_node_id: 99, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 });
+        let err = g.validate().expect_err("unknown source must fail");
+        assert!(err.contains("missing source node 99"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_edge_with_unknown_target_node() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        g.edges.push(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 77, to_input_idx: 0 });
+        let err = g.validate().expect_err("unknown target must fail");
+        assert!(err.contains("missing target node 77"), "unexpected error: {err}");
     }
 
     #[test]
