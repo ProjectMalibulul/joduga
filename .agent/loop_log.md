@@ -577,3 +577,35 @@ sets and re-sets FILTER_CUTOFF mid-flight, asserts amplitude collapse.
 
 **Verify:** 3/3 smoke tests pass (~620 ms total wallclock). 28 lib +
 5 ui_main + 3 smoke = 36 joduga tests. fmt + clippy clean.
+
+## Loop 17 — ShadowGraph: enforce output_node_id is an Output-type node
+
+**Observe:** validate() checks that the output_node_id key exists in
+nodes but never checks that the node's NodeType is Output. A user (or
+JSON import / bad refactor) could declare an Oscillator's id as the
+output, and the C++ engine would happily treat that oscillator's
+output buffer as the speaker sink — bypassing every downstream effect
+silently. Same bug class as loop 7-8 (silent wrong-output routing), at
+the validation layer instead of the resolver layer.
+
+**Decide:** Add a NodeType::Output assertion in validate() right after
+the existence check. Add a test that constructs ShadowGraph::new(0)
+with id=0 = Oscillator and confirms validate() returns the descriptive
+error.
+
+**Devil's advocate:**
+- Correctness: every existing test that uses validate() routes through
+  an Output-typed node by id, so no regressions. Confirmed: 36/36
+  joduga tests still green (29 lib + 5 ui_main + 3 smoke + 0 doctests).
+- Scope: doesn't enforce that the Output node has num_inputs ≥ 1, but
+  add_node already constructs Output with num_inputs=1 in every
+  callsite seen. Logged for future audit.
+- Priority: priority-1 silent-corruption — perfect mirror of the
+  validation gap that loops 7-8 fixed at the resolver layer.
+
+**Act:** rust/src/shadow_graph.rs::validate — added type-check for
+`self.nodes[&self.output_node_id].node_type`. Added test
+validate_rejects_non_output_typed_sink.
+
+**Verify:** 29 lib + 5 ui_main + 3 smoke = 37 joduga tests. fmt +
+clippy clean.

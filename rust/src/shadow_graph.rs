@@ -140,6 +140,18 @@ impl ShadowGraph {
             return Err(format!("Output node {} is not present in the graph", self.output_node_id));
         }
 
+        // The id must also refer to an Output-type node. Otherwise the
+        // C++ engine takes the wrong node's first output as the audio
+        // sink: e.g. an Oscillator's raw waveform gets routed straight
+        // to the speakers, bypassing every effect downstream.
+        let out_node = &self.nodes[&self.output_node_id];
+        if out_node.node_type != NodeType::Output {
+            return Err(format!(
+                "Node {} is configured as the audio output but has type {:?}, not Output",
+                self.output_node_id, out_node.node_type
+            ));
+        }
+
         // ShadowGraph::{nodes, edges} are pub, so a caller can splice an
         // edge directly into `edges` bypassing add_edge's endpoint check.
         // Validate edge endpoints here so the cycle DFS below can rely on
@@ -378,6 +390,19 @@ mod tests {
         g.edges.push(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 77, to_input_idx: 0 });
         let err = g.validate().expect_err("unknown target must fail");
         assert!(err.contains("missing target node 77"), "unexpected error: {err}");
+    }
+
+    /// validate() must reject a graph whose `output_node_id` points to a
+    /// node of any type other than NodeType::Output. Otherwise the C++
+    /// engine takes whatever's at slot 0 of that node as the audio sink,
+    /// effectively routing e.g. the oscillator's raw waveform straight
+    /// past every downstream effect.
+    #[test]
+    fn validate_rejects_non_output_typed_sink() {
+        let mut g = ShadowGraph::new(0); // claims node 0 is the output
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        let err = g.validate().expect_err("non-Output sink must fail");
+        assert!(err.contains("not Output"), "unexpected error: {err}");
     }
 
     #[test]
