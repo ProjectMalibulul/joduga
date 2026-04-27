@@ -650,3 +650,45 @@ malformed inputs.
 
 **Verify:** cmake build clean. 29 lib + 5 ui_main + 5 smoke = 39 joduga
 tests pass. fmt + clippy clean.
+
+## Loop 19 — MIDI parser: NoteOn vel=0 → NoteOff + queue-full diagnostic + 9 unit tests
+
+**Observe:** rust/src/midi_input.rs::dispatch is the only entry path
+for external MIDI events. Audit found:
+- **Logic bug**: NoteOn with velocity=0 was emitted as a NoteOn event.
+  Per MIDI 1.0 spec and decades of running-status convention, virtually
+  every keyboard sends 0x90 N 0x00 instead of 0x80 N V to terminate
+  notes. The current code re-triggers the held note instead of
+  releasing it. Affects every user with a typical hardware keyboard.
+- **Silent drops**: `let _ = queue.enqueue(cmd)` discards events when
+  the queue fills, with no log or counter. Burst input on a slow audio
+  thread silently loses notes.
+- **Zero test coverage**: dispatch() and its parsing are fully untested.
+
+**Decide:** Extract pure `parse(msg) -> Option<MIDIEventCmd>` from
+dispatch so the parsing logic is testable without midir. Translate
+NoteOn vel=0 → NoteOff in parse. Add stderr warning on queue-full in
+dispatch. Add 9 unit tests covering: vel=0 conversion, normal NoteOn,
+NoteOff, CC, pitch bend bit-packing, empty/truncated/sysex inputs,
+channel-nibble stripping.
+
+**Devil's advocate:**
+- Correctness: vel=0 → NoteOff is the unambiguously correct
+  interpretation per the MIDI spec; tests demonstrate both directions.
+- Scope: this is the cause, not a symptom — the synth nodes downstream
+  treat NoteOn / NoteOff distinctly, and would otherwise need to know
+  about the running-status convention themselves. Better to normalise
+  at the boundary.
+- Priority: priority-4 logic bug on a critical path (every keyboard
+  note goes through here). Plus priority-3 (test gap) closed.
+
+**Act:** rust/src/midi_input.rs — added parse(), updated dispatch to
+log queue-full, added 9-test #[cfg(test)] mod.
+
+**Verify:** 38 lib tests (was 29; +9 midi tests) pass. fmt + clippy
+clean.
+
+**Open follow-up:** queue-full log is unrate-limited and could spam
+stderr under sustained overload. A status_register.dropped_midi_count
+counter would be the right shape but requires touching the FFI ABI;
+deferred to a future loop.
