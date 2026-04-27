@@ -144,3 +144,57 @@ extern "C"
     uint8_t audio_engine_is_running(const AudioEngine *engine);
 
 } // extern "C"
+
+// ── ABI layout guards ──────────────────────────────────────────────
+//
+// Mirror of the offset_of! / size_of / align_of tests in
+// rust/src/ffi.rs and rust/src/lockfree_queue.rs. If a field is
+// reordered on either side, this fails at C++ compile time (and the
+// matching Rust test fails on `cargo test`), so the FFI cannot
+// silently desync.
+static_assert(sizeof(NodeDesc) == 16, "NodeDesc size drift vs Rust");
+static_assert(alignof(NodeDesc) == 4, "NodeDesc alignment drift vs Rust");
+static_assert(offsetof(NodeDesc, node_id) == 0, "NodeDesc.node_id offset");
+static_assert(offsetof(NodeDesc, node_type) == 4, "NodeDesc.node_type offset");
+static_assert(offsetof(NodeDesc, num_inputs) == 8, "NodeDesc.num_inputs offset");
+static_assert(offsetof(NodeDesc, num_outputs) == 12, "NodeDesc.num_outputs offset");
+
+static_assert(sizeof(NodeConnection) == 16, "NodeConnection size drift vs Rust");
+static_assert(alignof(NodeConnection) == 4, "NodeConnection alignment drift vs Rust");
+static_assert(offsetof(NodeConnection, from_node_id) == 0, "NodeConnection.from_node_id offset");
+static_assert(offsetof(NodeConnection, from_output_idx) == 4, "NodeConnection.from_output_idx offset");
+static_assert(offsetof(NodeConnection, to_node_id) == 8, "NodeConnection.to_node_id offset");
+static_assert(offsetof(NodeConnection, to_input_idx) == 12, "NodeConnection.to_input_idx offset");
+
+static_assert(sizeof(AudioEngineConfig) == 12, "AudioEngineConfig size drift vs Rust");
+static_assert(alignof(AudioEngineConfig) == 4, "AudioEngineConfig alignment drift vs Rust");
+static_assert(offsetof(AudioEngineConfig, sample_rate) == 0, "AudioEngineConfig.sample_rate offset");
+static_assert(offsetof(AudioEngineConfig, block_size) == 4, "AudioEngineConfig.block_size offset");
+static_assert(offsetof(AudioEngineConfig, cpu_core) == 8, "AudioEngineConfig.cpu_core offset");
+
+static_assert(sizeof(ParamUpdateCmd) == 16, "ParamUpdateCmd size drift vs Rust");
+static_assert(alignof(ParamUpdateCmd) == 16, "ParamUpdateCmd alignment drift vs Rust");
+static_assert(offsetof(ParamUpdateCmd, node_id) == 0, "ParamUpdateCmd.node_id offset");
+static_assert(offsetof(ParamUpdateCmd, param_hash) == 4, "ParamUpdateCmd.param_hash offset");
+static_assert(offsetof(ParamUpdateCmd, value) == 8, "ParamUpdateCmd.value offset");
+static_assert(offsetof(ParamUpdateCmd, padding) == 12, "ParamUpdateCmd.padding offset");
+
+static_assert(sizeof(StatusRegister) == 16, "StatusRegister size drift vs Rust");
+static_assert(alignof(StatusRegister) == 4, "StatusRegister alignment drift vs Rust");
+static_assert(offsetof(StatusRegister, graph_version) == 0, "StatusRegister.graph_version offset");
+static_assert(offsetof(StatusRegister, adopted_version) == 4, "StatusRegister.adopted_version offset");
+static_assert(offsetof(StatusRegister, cpu_load_permil) == 8, "StatusRegister.cpu_load_permil offset");
+static_assert(offsetof(StatusRegister, reserved) == 12, "StatusRegister.reserved offset");
+
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
+// 64-bit only: pointer width determines CompiledGraph layout.
+static_assert(sizeof(CompiledGraph) == 48, "CompiledGraph size drift vs Rust (64-bit)");
+static_assert(alignof(CompiledGraph) == 8, "CompiledGraph alignment drift vs Rust (64-bit)");
+static_assert(offsetof(CompiledGraph, nodes) == 0, "CompiledGraph.nodes offset");
+static_assert(offsetof(CompiledGraph, num_nodes) == 8, "CompiledGraph.num_nodes offset");
+static_assert(offsetof(CompiledGraph, connections) == 16, "CompiledGraph.connections offset");
+static_assert(offsetof(CompiledGraph, num_connections) == 24, "CompiledGraph.num_connections offset");
+static_assert(offsetof(CompiledGraph, execution_order) == 32, "CompiledGraph.execution_order offset");
+static_assert(offsetof(CompiledGraph, num_in_order) == 40, "CompiledGraph.num_in_order offset");
+static_assert(offsetof(CompiledGraph, output_node_id) == 44, "CompiledGraph.output_node_id offset");
+#endif

@@ -1,9 +1,8 @@
-# Loop 12 candidate: C++ static_assert mirror of FFI offsets
+# Loop 13 candidate: audit unwrap_or(0) / unwrap_or_else node-id fallbacks
 
-Loop 10/11 pinned the layout from the Rust side. Add matching
-static_assert(offsetof(...) == N, ...) lines in cpp/include/audio_engine.h
-so a C++-side reorder fails at compile time on the C++ side too —
-not just when someone happens to run cargo test. Closes the loop.
-
-Backup: extract duplicate resolve_output_node_id helpers (egui +
-tauri) into a shared joduga module.
+Loops 7-8 found that silently falling back to node id 0 / "the last
+node in the list" masked compile failures of the user's graph. Sweep
+the workspace for other unwrap_or / unwrap_or_else / .or(Some(0))
+patterns on Result/Option returns of node lookups, file lookups, or
+parser dispatches that should be hard errors. List them; pick the
+worst one to fix next loop.

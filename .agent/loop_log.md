@@ -406,3 +406,35 @@ midi_event_cmd_field_offsets, and status_register_field_offsets_match_cpp
 in rust/src/lockfree_queue.rs::tests.
 
 **Verify:** 26 lib tests (was 23). fmt + clippy clean.
+
+## Loop 12 — C++ static_assert mirror of FFI layout
+
+**Observe:** loops 10-11 pinned the FFI struct layout from the Rust
+side. But a C++-side reorder only surfaces when someone happens to
+run `cargo test` — the C++ build itself stays green. Asymmetric
+coverage.
+
+**Decide:** Add static_assert(offsetof / sizeof / alignof) lines in
+cpp/include/audio_engine.h mirroring every Rust layout assertion
+from loops 1, 10, 11. Closes the symmetry: a drift on either side
+fails its own language's build.
+
+**Devil's advocate:**
+- Correctness: `offsetof` on standard-layout structs is well-defined
+  in C++; all five FFI structs are POD/aggregates. CompiledGraph
+  layout is pointer-width dependent, so guard with
+  UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu like the Rust cfg.
+- Scope: this is symmetry, not a new behavioural test. Justified
+  because the FFI is the binary-compatibility surface — drift here
+  is silent corruption, exactly the priority-1 class.
+- Priority: completes the loop-10/11 pass with no remaining gap.
+  Cheap, mechanical, high signal.
+
+**Act:** Appended a "ABI layout guards" block after the extern "C"
+in cpp/include/audio_engine.h, covering NodeDesc, NodeConnection,
+AudioEngineConfig, ParamUpdateCmd, StatusRegister, and 64-bit-gated
+CompiledGraph.
+
+**Verify:** cmake --build cmake-build -j builds clean (every TU
+that includes audio_engine.h evaluates the asserts). 26 lib tests
+green, clippy clean.
