@@ -348,13 +348,23 @@ private:
             float y = x;
             for (int s = 0; s < phaser_stages; ++s)
             {
-                float ap_val = coeff * (y - phaser_ap[s]) + y;
-                // swap for next iteration
-                float tmp = y;
-                y = phaser_ap[s] + coeff * (tmp - ap_val);
-                y = ap_val;
-                phaser_ap[s] = ap_val;
+                // Canonical 1st-order all-pass, Direct Form II:
+                //   v = x - coeff * state
+                //   y = coeff * v + state
+                //   state = v
+                // Transfer function H(z) = (coeff + z^-1) / (1 + coeff*z^-1),
+                // which is unit-modulus on the unit circle. The previous
+                // implementation overwrote `y` with `ap_val` immediately
+                // after computing the all-pass output, collapsing the
+                // cascade into a 1-pole low-pass and discarding the
+                // intended phase response.
+                float v = y - coeff * phaser_ap[s];
+                float y_new = coeff * v + phaser_ap[s];
+                phaser_ap[s] = v;
+                y = y_new;
             }
+            if (!std::isfinite(y))
+                y = 0.0f;
             out[i] = (x + y) * 0.5f;
         }
     }
@@ -378,12 +388,22 @@ private:
             if (d0 >= MAX_DELAY_LEN - 1)
                 d0 = MAX_DELAY_LEN - 2;
 
-            delay_buf[write_pos] = in[i];
-            write_pos = (write_pos + 1) % MAX_DELAY_LEN;
-
+            // Read-before-write so d0=1 actually delays by 1 sample.
+            // The previous order wrote in[i] into delay_buf[write_pos]
+            // first and then read at (write_pos - d0) AFTER the index
+            // had advanced, meaning d0=1 returned the just-written
+            // sample (zero delay) and the lerp coefficients indexed
+            // off-by-one for all small d0. Matches the chorus and
+            // pitch-shift ordering.
             int r0 = (write_pos - d0 + MAX_DELAY_LEN) % MAX_DELAY_LEN;
             int r1 = (r0 - 1 + MAX_DELAY_LEN) % MAX_DELAY_LEN;
-            out[i] = delay_buf[r0] * (1.0f - frac) + delay_buf[r1] * frac;
+            float y = delay_buf[r0] * (1.0f - frac) + delay_buf[r1] * frac;
+            if (!std::isfinite(y))
+                y = 0.0f;
+
+            delay_buf[write_pos] = in[i];
+            write_pos = (write_pos + 1) % MAX_DELAY_LEN;
+            out[i] = y;
         }
     }
 

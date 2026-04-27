@@ -1,36 +1,31 @@
-# Next loop seed (loop 28)
+# Next loop seed (loop 29)
 
 ## Target
-`cpp/include/nodes/delay.h` `process_phaser` (around lines 311-320) —
-the dead-code overwrite makes the phaser a no-op (or worse, a wrong
-single-stage IIR) instead of a true cascaded allpass.
+`cpp/include/nodes/effects.h` — full audit. Highest-priority
+patterns to look for:
 
-```cpp
-float ap_val = coeff * (y - phaser_ap[s]) + y;
-float tmp    = y;
-y = phaser_ap[s] + coeff * (tmp - ap_val);   // <-- DEAD: overwritten by next line
-y = ap_val;                                  // <-- this is what actually runs
-phaser_ap[s] = ap_val;
-```
+1. `EFFECT_MODE = static_cast<int>(value)` on raw param (NaN UB,
+   loop 25/27 pattern).
+2. Distortion / waveshaper saturation that uses recursion or
+   unbounded drive multipliers — input clamp before non-linearity.
+3. Bitcrusher sample-rate reducer: counter integer arithmetic must
+   not overflow on large rate-reduction factors; output must be
+   sampled-and-held correctly.
+4. Effects stack typically has `wet * effect(in) + (1-wet) * in` —
+   verify wet is clamped [0,1] and the combined result NaN-scrubbed.
+5. RT-discipline: any std::vector resize, std::string ops, or
+   heap allocation in process()? Pre-allocate in constructor.
 
-The intended formula is a 1st-order allpass per stage: standard form
-is `y = -coeff*x + (x - coeff*y_prev) * something` — needs lookup
-against e.g. JOS DAFX phaser reference. Most likely what was meant:
-```
-y_new       = -coeff * y + phaser_ap[s] + coeff * y;   // allpass output
-phaser_ap[s] = y + coeff * (in - y_new);               // state update
-y = y_new;
-```
-Verify against a known phaser implementation before committing.
+## Guideline
+Apply same defense-in-depth as loops 25-28:
+- early `if (!std::isfinite(value)) return;` at set_param entry
+- mode enum casts: cast → range-clamp → assign
+- per-sample NaN scrub on stateful feedback paths
+- audio-thread allocation: pre-size in constructor, std::fill in setter
 
-## Backup target
-If phaser fix is too speculative without a reference, instead fix
-`process_vibrato` write-then-read ordering (line ~343): the write to
-`delay_buf[write_pos]` happens BEFORE the read at `write_pos - d0`,
-so when `d0 == 1` the read returns the just-written sample (zero
-delay) instead of the previous one. Swap to read-before-write.
-
-## After loop 28
-Loop 29: audit `cpp/include/nodes/effects.h` for the same NaN/UB/RT
-patterns. Distortion + bitcrusher + waveshaper are likely candidates
-for unbounded-state bugs.
+## After loop 29
+Loop 30 candidates (in priority order):
+- gain.h audit (parameter automation safety)
+- output.h audit (DC-blocker / soft-clipper state)
+- The FFI boundary in `rust/src/audio_engine_wrapper.rs` for
+  param-value validation symmetry with the new C++ guards.

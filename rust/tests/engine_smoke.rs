@@ -769,3 +769,81 @@ fn delay_node_rejects_rogue_params_and_stays_bounded() {
 
     eng.stop().expect("stop");
 }
+
+/// Loop 28 regression: DelayNode `process_phaser` had a dead-code
+/// overwrite (`y = phaser_ap[s] + coeff*(tmp-ap_val);` immediately
+/// followed by `y = ap_val;`) that collapsed the cascaded all-pass
+/// chain into a single-pole low-pass — the phaser was not a phaser.
+/// The correct fix is the canonical Direct-Form-II first-order
+/// all-pass (`v = x - coeff*s; y = coeff*v + s; s = v`).
+///
+/// We don't try to verify the all-pass response numerically here;
+/// instead we pin the no-crash / bounded / finite-output contract
+/// for PHASER mode and for VIBRATO mode (loop 28's other fix:
+/// read-before-write so d0=1 actually delays one sample).
+#[test]
+fn delay_phaser_and_vibrato_modes_stay_bounded() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Delay, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+
+    const DELAY_MODE: u32 = 0xCD;
+    const PHASER_STAGES: u32 = 0xDA;
+    const LFO_RATE: u32 = 0xD7;
+    const LFO_DEPTH: u32 = 0xD8;
+
+    // PHASER mode = 4 in the DelayMode enum (SIMPLE_DELAY=0, SCHROEDER_REVERB=1,
+    // CHORUS=2, FLANGER=3, PHASER=4, VIBRATO=5, PITCH_SHIFT=6).
+    eng.set_param(1, DELAY_MODE, 4.0).expect("phaser mode");
+    eng.set_param(1, LFO_RATE, 1.5).expect("lfo rate");
+    eng.set_param(1, LFO_DEPTH, 1.0).expect("lfo depth");
+    eng.set_param(1, PHASER_STAGES, 6.0).expect("stages");
+
+    eng.start().expect("start");
+    thread::sleep(Duration::from_millis(150));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "no samples after PHASER mode");
+    let mut max_abs = 0.0_f32;
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "phaser sample {i} non-finite ({s})");
+        max_abs = max_abs.max(s.abs());
+    }
+    assert!(max_abs <= 4.0, "phaser output exceeded sane bound: {max_abs}");
+    // Allpass cascade should retain near-unity through-energy
+    // (phaser output is `(x+y)/2` of the dry/wet allpass-cascade
+    // sum, both bounded by |x|=1 from the oscillator). Anything
+    // implausibly small implies the cascade is silently zeroing.
+    assert!(max_abs > 0.05, "phaser output suspiciously quiet: {max_abs}");
+
+    // VIBRATO mode (5) — read-before-write fix.
+    eng.set_param(1, DELAY_MODE, 5.0).expect("vibrato mode");
+    thread::sleep(Duration::from_millis(120));
+    let n2 = ring.read(&mut buf);
+    assert!(n2 > 0, "no samples after VIBRATO mode");
+    let mut max_abs2 = 0.0_f32;
+    for (i, &s) in buf[..n2].iter().enumerate() {
+        assert!(s.is_finite(), "vibrato sample {i} non-finite ({s})");
+        max_abs2 = max_abs2.max(s.abs());
+    }
+    assert!(max_abs2 <= 4.0, "vibrato output exceeded sane bound: {max_abs2}");
+
+    eng.stop().expect("stop");
+}

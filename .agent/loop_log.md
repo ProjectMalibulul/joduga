@@ -987,3 +987,70 @@ deferred.
 **NEXT.** Loop 28: phaser dead-code in delay.h `process_phaser`
 (lines 311-319) — dead assignment masks broken allpass cascade.
 Then loop 29: audit `cpp/include/nodes/effects.h` for NaN/RT.
+
+## Loop 28 — Phaser dead-code allpass cascade + vibrato write-then-read off-by-one
+
+**OBSERVE.** Two priority-4 logic bugs in `cpp/include/nodes/delay.h`
+left over from the OBSERVE pass in loop 27:
+
+1. `process_phaser` (lines ~349-356): the cascade body computed
+   `ap_val = coeff*(y - phaser_ap[s]) + y; ... y = phaser_ap[s] +
+   coeff*(tmp-ap_val); y = ap_val;` — the second `y` assignment
+   overwrites the first immediately, so the intermediate value is
+   dead code. The surviving recurrence is
+   `phaser_ap[s] ← (1+coeff)·y - coeff·phaser_ap[s]` and `y` mirrors
+   that — i.e. `H(z) = (1+coeff)/(1+coeff·z⁻¹)`, a 1-pole low-pass
+   with magnitude response that is decidedly NOT unit-modulus. The
+   "phaser" therefore had no phase-modulation behavior.
+2. `process_vibrato` (lines ~381-386): wrote `delay_buf[write_pos]
+   = in[i]`, advanced write_pos, then read at `(write_pos - d0)`.
+   With d0=1 the read returns the just-written sample (zero delay),
+   and the lerp coefficients `frac` index off-by-one for all small
+   d0. Sub-perceptual at d0>10 but wrong on principle. Chorus and
+   pitch-shift in the same file already use the correct
+   read-before-write order.
+
+**ORIENT.** Both bugs are in modes that have zero smoke coverage
+(loop 27 only tested SIMPLE_DELAY and SCHROEDER_REVERB). Bundling
+them keeps the cost of adding test scaffolding amortized.
+
+**DECIDE.** Replace phaser body with canonical Direct-Form-II
+1st-order all-pass: `v = x - coeff·s; y = coeff·v + s; s = v`,
+H(z) = (coeff + z⁻¹)/(1 + coeff·z⁻¹), `|H(e^jω)| = 1`. Add NaN
+scrub on output. Swap vibrato to read-before-write; add NaN scrub
+on output.
+
+**DEVIL.**
+- *Correctness*: New phaser formula's allpass property
+  `|H(e^jω)|² = (coeff² + 2·coeff·cos(ω) + 1) / (1 + 2·coeff·cos(ω)
+  + coeff²) = 1` — verified on paper before committing.
+- *Scope*: Real fix could alternatively swap to a Direct-Form-I
+  allpass with separate x/y state per stage. DF-II with single state
+  per stage is canonical, requires no new fields, and matches the
+  existing `phaser_ap[s]` shape — least-disruptive correct fix.
+- *Priority*: Phaser bug is audibly wrong; vibrato is hygiene. Could
+  have split into separate loops; bundling is justified by shared
+  test scaffolding and same-file scope.
+- *Regression*: lint passed, full smoke suite passes (15/15). The new
+  test asserts non-trivial energy through the phaser
+  (`max_abs > 0.05`) so a broken collapse-to-zero formula would
+  fail the test rather than silently pass.
+
+**ACT.**
+- delay.h `process_phaser`: replace dead-code body with DF-II
+  allpass per stage; add isfinite scrub on combined output.
+- delay.h `process_vibrato`: swap to read-before-write order
+  (matches chorus/pitch ordering); add isfinite scrub on output.
+- engine_smoke.rs new test
+  `delay_phaser_and_vibrato_modes_stay_bounded`: PHASER mode (=4)
+  with stages=6, depth=1.0, asserts every sample finite + bounded
+  + non-trivially loud (>0.05). VIBRATO mode (=5) with same LFO,
+  asserts finite + bounded.
+
+**VERIFY.** cmake build clean. cargo test 15/15 pass (was 14).
+fmt + clippy --release --all-targets -- -D warnings clean.
+
+**NEXT.** Loop 29: audit `cpp/include/nodes/effects.h` for the same
+NaN/UB/RT patterns (FILTER_MODE-style cast UB on EFFECT_MODE,
+unbounded distortion drive recursion, bitcrusher rate-reduction
+counter overflow, missing waveshaper input clamp).
