@@ -871,3 +871,32 @@ Result: 38 lib + **10 smoke** + 5 ui_main = **53 tests pass**. fmt + clippy clea
 
 Result: 38 lib + **12 smoke** + 5 ui_main = **55 tests pass**. fmt + clippy clean.
 
+
+## Loop 26 — Reverb audio-thread allocation + NaN poisoning
+
+**OBSERVE**: 38 lib + 12 smoke at start. Audited `cpp/include/nodes/reverb.h`.
+
+**ORIENT**: Two priority-1 issues, one a real-time-discipline violation:
+
+1. **Audio-thread allocation**: `set_param(DELAY_TIME, …)` called `set_delay_lengths`, which called `lines[i].assign(n, 0.0f)` for each of the 4 FDN delay vectors. `std::vector::assign` reallocates when n exceeds capacity — and the constructor only sized buffers to the *initial* room_size (≈0.07 s of delay), so any later DELAY_TIME automation crossing into a larger room reallocated under the global allocator lock. This is the textbook RT-discipline bug the project's design.md flags repeatedly: priority inversion → audio-thread blocked → xrun.
+
+2. **NaN poisoning of FDN state**: The 4-line FDN feedback matrix mixes `f0..f3` from the previous samples and the input. Once a NaN entered any line, the matrix recirculated it through every line forever. The reverb has no recovery path. Same bug class as loop 25's filter z1/z2 poisoning.
+
+A third minor: `set_param` accepted non-finite parameter values and pushed them through fmin/fmax (which propagate NaN as NaN per IEEE rules unless `fmin`/`fmax` are the C99 forms — they are, so NaN is *suppressed* and you get the other operand). Still safer to reject up front before the room-size recompute.
+
+**DECIDE**:
+1. Move the allocation out of the audio thread: in the constructor, `lines[i].assign(MAX_DELAY_SAMPLES, 0.0f)` once (≈1.5 MB total, acceptable per-instance). `set_delay_lengths` then only updates `delay_len[i]` and `std::fill`s the active range — never reallocates.
+2. Add a per-sample NaN/Inf guard on `f0..f3`: if any feedback term goes non-finite, reset all four to zero and zero the current output sample. The next sample re-enters the FDN cleanly.
+3. Reject non-finite values at the `set_param` entry point (early `if (!std::isfinite(value)) return;`).
+
+**DEVIL'S ADVOCATE**:
+- *Correctness*: Pre-allocating to 96000 samples × 4 lines × 4 bytes = 1.5 MB per Reverb node is a fixed cost paid once at graph compile time, on the host thread. No audio-thread allocator interaction afterwards. The `std::fill` in `set_delay_lengths` is O(n) but lock-free and bounded — the existing `assign` was at least the same cost plus the alloc. *No standing.*
+- *Scope*: Could the input to the reverb produce NaN even after loops 23/24 hardened the oscillator? Yes — any custom node, denormal cascade, or future node could. NaN guard is necessary, not symptom-treating. *No standing.*
+- *Priority*: RT allocation is priority 1 (definitionally a real-time correctness bug — silent xrun). NaN poisoning is priority 1 (silent permanent corruption). *No standing.*
+
+**ACT**:
+- `cpp/include/nodes/reverb.h`: pre-allocate to `MAX_DELAY_SAMPLES`, `set_delay_lengths` switches from `assign` to `std::fill` over the active prefix, NaN scrub on feedback matrix, non-finite param rejection.
+- `rust/tests/engine_smoke.rs`: `reverb_param_automation_under_load_stays_bounded` — drives 40 DELAY_TIME changes mid-stream + sends NaN/Inf rogue params, asserts every output sample finite + bounded.
+
+Result: 38 lib + **13 smoke** + 5 ui_main = **56 tests pass**. fmt + clippy clean.
+

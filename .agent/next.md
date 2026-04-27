@@ -1,22 +1,21 @@
-# Loop 26 candidate
+# Loop 27 candidate
 
-**Audit `cpp/include/nodes/reverb.h` for NaN/Inf propagation and unbounded state.**
+**Audit `cpp/include/nodes/delay.h` and `cpp/include/nodes/effects.h`.**
 
-Reverb networks (Schroeder, FDN, Freeverb) are notorious for unstable
-feedback loops when feedback coefficients approach 1.0 or when an
-upstream NaN slips into the comb/allpass delay buffers — once poisoned,
-the state never decays. After loop 25's filter NaN-recovery scrub, the
-reverb is the next-most-load-bearing node likely to suffer the same
-class of bug.
+Apply the same checklist that surfaced the priority-1 bugs in loops 23-26:
+1. Audio-thread allocation in set_param (vector::resize, vector::assign on
+   delay buffers reactive to time-param changes).
+2. NaN/Inf state poisoning in any feedback-laden node.
+3. Unguarded `static_cast<int>(value)` on subtype/mode params.
+4. Single-step phase/buffer wraps that fail under unclamped param values.
 
-Look for:
-1. Param clamping on `REVERB_*` (room size, damping, wet, dry, feedback).
-2. Output-mode `static_cast<int>(value)` UB on `REVERB_MODE` (same as filter).
-3. NaN recovery on delay-line state — does a single poisoned input stay forever?
-4. Per-sample explosion guards (soft clip vs. state clip — same bug class as loop 25).
+Per-file priorities by likely blast radius:
+- delay.h: feedback-loop NaN poisoning (highest).
+- effects.h: subtype-driven dispatch (chorus, flanger, distortion all
+  with their own state — likely a parade of small bugs).
 
 ## Backup loops
-- Filter resonance-Q ceiling per-mode (loop 25 follow-up — coefficient stability check before commit).
+- Filter resonance-Q ceiling per-mode (loop 25 follow-up — coefficient stability check).
 - Carrier-phase `if`-wrap in oscillator.h (defense in depth — currently safe).
 - Rate-limit `[midi]` queue-full log (loop 19 follow-up).
 - Enum-keyed `BuiltinTemplate` for compile-time-checked catalog lookups.

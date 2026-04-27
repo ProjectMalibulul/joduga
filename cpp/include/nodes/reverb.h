@@ -17,6 +17,7 @@ class ReverbNode : public AudioNode
 {
 private:
     static constexpr size_t FDN_SIZE = 4;
+    static constexpr size_t MAX_DELAY_SAMPLES = 96000; // ≥1 s at 96 kHz
     std::array<std::vector<float>, FDN_SIZE> lines;
     std::array<size_t, FDN_SIZE> write_pos{};
     std::array<size_t, FDN_SIZE> delay_len{};
@@ -30,11 +31,18 @@ public:
     {
         num_inputs = 1;
         num_outputs = 1;
+        // Allocate the maximum buffer once at construction so subsequent
+        // DELAY_TIME / room-size param changes never reallocate from
+        // the audio thread (priority inversion → xrun).
+        for (auto &line : lines)
+            line.assign(MAX_DELAY_SAMPLES, 0.0f);
         set_delay_lengths(room_size);
     }
 
     void set_param(uint32_t param_hash, float value) override
     {
+        if (!std::isfinite(value))
+            return;
         switch (param_hash)
         {
         case ParamHash::DELAY_TIME:
@@ -90,10 +98,22 @@ public:
             const float y = 0.25f * (d0 + d1 + d2 + d3);
             out[i] = x * (1.0f - wet) + y * wet;
 
-            const float f0 = x + feedback * (d1 + d2 - d3);
-            const float f1 = x + feedback * (d0 - d2 + d3);
-            const float f2 = x + feedback * (-d0 + d1 + d3);
-            const float f3 = x + feedback * (d0 + d1 - d2);
+            float f0 = x + feedback * (d1 + d2 - d3);
+            float f1 = x + feedback * (d0 - d2 + d3);
+            float f2 = x + feedback * (-d0 + d1 + d3);
+            float f3 = x + feedback * (d0 + d1 - d2);
+
+            // NaN/Inf recovery: a single poisoned sample (from an
+            // upstream node or a denormal cascade) would otherwise
+            // cycle through the FDN matrix forever, leaving the
+            // reverb permanently silent or shaped-garbage.
+            if (!std::isfinite(f0) || !std::isfinite(f1) || !std::isfinite(f2) ||
+                !std::isfinite(f3))
+            {
+                f0 = f1 = f2 = f3 = 0.0f;
+                if (!std::isfinite(out[i]))
+                    out[i] = 0.0f;
+            }
 
             lines[0][write_pos[0]] = f0;
             lines[1][write_pos[1]] = f1;
@@ -114,9 +134,15 @@ private:
         for (size_t i = 0; i < FDN_SIZE; ++i)
         {
             size_t n = static_cast<size_t>(base_sec * ratios[i] * sample_rate);
-            n = std::max<size_t>(32, std::min<size_t>(n, 96000));
+            n = std::max<size_t>(32, std::min<size_t>(n, MAX_DELAY_SAMPLES));
             delay_len[i] = n;
-            lines[i].assign(n, 0.0f);
+            // Don't `assign()` here — that would reallocate when called
+            // from set_param() on the audio thread. The buffer was
+            // sized to MAX_DELAY_SAMPLES in the constructor; we just
+            // zero the now-active region so old echoes from the
+            // previous room size don't bleed into the new geometry,
+            // and clamp write_pos back into range.
+            std::fill(lines[i].begin(), lines[i].begin() + n, 0.0f);
             write_pos[i] = 0;
         }
     }

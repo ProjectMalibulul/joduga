@@ -628,3 +628,74 @@ fn filter_mode_rejects_nan_and_out_of_range() {
     }
     eng.stop().expect("stop");
 }
+
+/// Loop 26 regression: ReverbNode::set_param previously called
+/// `lines[i].assign(n, 0.0f)` from inside the audio thread (via
+/// apply_pending_params on every DELAY_TIME change). When the new size
+/// exceeded capacity, std::vector reallocated under the global
+/// allocator lock — a textbook real-time-discipline violation that
+/// produces audible xruns under sustained automation.
+///
+/// The fix pre-allocates each delay line to MAX_DELAY_SAMPLES at
+/// construction so DELAY_TIME changes are alloc-free. This test pins
+/// the no-crash / bounded-output contract while hammering DELAY_TIME
+/// from the host thread during live playback. (Asserting "no
+/// allocation occurred" requires hooking the allocator and is out of
+/// scope here; the structural invariant is verified by code review.)
+#[test]
+fn reverb_param_automation_under_load_stays_bounded() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Reverb, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+    eng.set_param(1, param_hash::DELAY_FEEDBACK, 0.9).expect("set fb");
+    eng.set_param(1, param_hash::MIX, 0.5).expect("set mix");
+
+    eng.start().expect("start");
+
+    // Hammer DELAY_TIME changes while audio is running. Pre-fix this
+    // would reallocate delay-line vectors on the audio thread.
+    for step in 0..40 {
+        let room = 0.1 + (step as f32 * 0.02) % 0.9;
+        eng.set_param(1, param_hash::DELAY_TIME, room).expect("set room");
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    // Also send rogue non-finite values; set_param should quietly drop
+    // them without disturbing state.
+    eng.set_param(1, param_hash::DELAY_TIME, f32::NAN).expect("send NaN room");
+    eng.set_param(1, param_hash::DELAY_FEEDBACK, f32::INFINITY).expect("send Inf fb");
+    eng.set_param(1, param_hash::MIX, f32::NAN).expect("send NaN mix");
+
+    thread::sleep(Duration::from_millis(60));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "no samples after reverb param storm");
+
+    let mut max_abs = 0.0_f32;
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} non-finite ({s}) after reverb automation");
+        max_abs = max_abs.max(s.abs());
+    }
+    // Reverb at fb=0.9 mix=0.5 with 440 Hz input should never approach
+    // any large bound; 4.0 is generous.
+    assert!(max_abs <= 4.0, "reverb output exceeded sane bound under param storm: {max_abs}");
+
+    eng.stop().expect("stop");
+}
