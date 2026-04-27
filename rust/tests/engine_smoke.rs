@@ -461,3 +461,66 @@ fn fm_oscillator_with_extreme_mod_freq_stays_bounded() {
 
     eng.stop().expect("engine stop");
 }
+
+/// Loop 24 regression: SUPER_SAW oscillator with extreme `DETUNE` once
+/// suffered the same single-step phase-wrap blowup as FM/AM (loop 23).
+/// Per-voice phase advance is `TWO_PI * frequency * (1 + detune_amt) *
+/// dt`; with unclamped detune the increment per sample could exceed
+/// `TWO_PI`, leaving `saw_phases[j]` to grow without bound and
+/// poisoning the saw output. Verify samples remain finite and bounded
+/// after the clamp + while-wrap fix.
+#[test]
+fn super_saw_with_extreme_detune_stays_bounded() {
+    let mut graph = ShadowGraph::new(1);
+    graph
+        .add_node(Node {
+            id: 0,
+            node_type: NodeType::Oscillator,
+            num_inputs: 0,
+            num_outputs: 1,
+            parameters: HashMap::new(),
+        })
+        .expect("add osc");
+    graph
+        .add_node(Node {
+            id: 1,
+            node_type: NodeType::Output,
+            num_inputs: 1,
+            num_outputs: 0,
+            parameters: HashMap::new(),
+        })
+        .expect("add output");
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .expect("connect");
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng =
+        AudioEngineWrapper::new(nodes, edges, order, 1, 48_000, 256, 0).expect("engine init");
+
+    eng.set_param(0, param_hash::WAVEFORM_TYPE, 11.0).expect("set super_saw");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 20_000.0).expect("set freq");
+    eng.set_param(0, param_hash::DETUNE, 1.0e6).expect("set extreme detune");
+
+    eng.start().expect("engine start");
+    thread::sleep(Duration::from_millis(120));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "engine produced no SUPER_SAW samples");
+
+    let mut max_abs = 0.0_f32;
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} is non-finite ({s}) under extreme DETUNE");
+        max_abs = max_abs.max(s.abs());
+    }
+    // SUPER_SAW averages voice outputs of `2*(p/TWO_PI) - 1` (a saw in
+    // [-1, 1]); the average is also in [-1, 1] up to numerical slack.
+    assert!(
+        max_abs <= 1.0 + 1e-3,
+        "SUPER_SAW exceeded saw bound under extreme detune: max |s| = {max_abs}"
+    );
+
+    eng.stop().expect("engine stop");
+}

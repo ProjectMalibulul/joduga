@@ -823,3 +823,24 @@ Same `if`-wrap exists for the carrier `phase` and `saw_phases`, but carrier is b
 
 Result: 38 lib + 9 smoke + 5 ui_main = **52 tests pass**. fmt + clippy clean.
 
+
+## Loop 24 — SUPER_SAW detune accumulator blowup
+
+**OBSERVE**: 38 lib + 9 smoke at start. Loop 23 fixed FM/AM mod_phase wrap; next.md flagged the same pattern in SUPER_SAW.
+
+**ORIENT**: `SUPER_SAW` per-voice update: `saw_phases[j] += TWO_PI * frequency * (1 + detune_amt) * dt` with `detune_amt = (j - v/2) * detune * 0.01`. `detune` was unclamped (line 109: `detune = value;`). With voices=7, j=6, frequency=20000, detune=1e6 → factor=3001, increment ≈ 7854 rad/sample. Single-step `if (saw_phases[j] > TWO_PI)` wrap can't normalise → unbounded phase → `(p/TWO_PI)` overflows representable floats → garbage.
+
+**DECIDE**: Mirror loop 23's fix on the detune path: clamp DETUNE to [0, 1] (matches the 0-1 UI control documented in DESIGN.md), and convert the SUPER_SAW phase wrap from `if` to `while`.
+
+**DEVIL'S ADVOCATE**:
+- *Correctness*: Clamping ≥1.0 changes nothing for sane inputs (typical detune is 0.1-0.3). After clamp, max increment per voice ≈ TWO_PI * 20000 * 1.03 / 48000 ≈ 2.69 rad < TWO_PI; while-loop runs ≤1 iteration. *No standing.*
+- *Scope*: Carrier `phase` wrap remains `if`, but it's safe under the existing 20 kHz frequency clamp and is documented in next.md as defense-in-depth follow-up. *Acknowledged, not bundled.*
+- *Priority*: priority-1 silent corruption identical to loop 23. *No standing.*
+
+**ACT**:
+- `cpp/include/nodes/oscillator.h::set_param`: clamp `DETUNE` to [0, 1].
+- `cpp/include/nodes/oscillator.h::process` SUPER_SAW: `if` → `while` on saw_phases wrap.
+- `rust/tests/engine_smoke.rs`: `super_saw_with_extreme_detune_stays_bounded` (waveform=11, freq=20kHz, detune=1e6 — pre-fix would overflow per-voice phase; post-fix clamp + while keeps output finite & bounded).
+
+Result: 38 lib + **10 smoke** + 5 ui_main = **53 tests pass**. fmt + clippy clean.
+

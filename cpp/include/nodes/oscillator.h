@@ -114,7 +114,12 @@ public:
         }
         else if (param_hash == ParamHash::DETUNE)
         {
-            detune = value;
+            // Detune is a 0-1 ratio scaled internally by 0.01 per voice.
+            // An unclamped large value combined with high `voices` and a
+            // 20 kHz carrier could push `saw_phases[j] += TWO_PI * f *
+            // (1 + detune_amt) * dt` past TWO_PI per sample, defeating
+            // the single-step wrap below.
+            detune = std::fmax(0.0f, std::fmin(value, 1.0f));
         }
         else if (param_hash == 0xAAu)
         { // voices
@@ -236,7 +241,7 @@ public:
                     float p = saw_phases[j];
                     sample += 2.0f * (p / TWO_PI) - 1.0f;
                     saw_phases[j] += TWO_PI * frequency * (1.0f + detune_amt) * sample_rate_inv;
-                    if (saw_phases[j] > TWO_PI)
+                    while (saw_phases[j] > TWO_PI)
                         saw_phases[j] -= TWO_PI;
                 }
                 sample /= (float)v;
