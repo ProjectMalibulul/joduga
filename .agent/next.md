@@ -1,11 +1,11 @@
-# Next loop seed (loop 39)
+# Next loop seed (loop 40)
 
-Host-side concurrency now scales with concurrent UI calls. Outstanding:
+Boundary validations for set_param now cover node existence + param queue backpressure + isfinite-at-DSP-entry. The Tauri host is robust.
 
-**Loop 39 candidate**: `set_param` Tauri command does not validate that `node_id` exists in the running engine. A stale id from a freshly-rebuilt UI graph would be silently enqueued for a node that doesn't exist — the C++ param drain skips unknown ids, but the user sees no diagnostic.
+**Loop 40 candidate**: `start_engine` does not validate that the requested `output_id` (resolved via `resolve_output_node_id`) is reachable from at least one source. A graph with an Output node disconnected from any oscillator passes validation today and runs silently. Would be more helpful to emit a warning at start.
 
 **Backups**:
-- shadow_graph::compile output_buffer_offset overflow audit.
-- Frontend (tauri-ui/src/store.ts) error-display surface.
+- shadow_graph::compile output_buffer_offset overflow audit (256 nodes × MAX_OUTPUTS could overflow u32 only at extreme combinations).
+- Frontend (tauri-ui/src/store.ts) error-display surface for the structured set_param errors.
 - MIDI queue plumbed but never drained (large feature gap).
-- Tauri command `set_param` busy-loops the front-end with `?` errors when queue is briefly full — should we provide a non-fatal "param dropped due to backpressure" return value?
+- audio_engine.cpp: status_register graph_version/sample_count atomics — verify ordering.

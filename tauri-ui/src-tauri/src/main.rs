@@ -60,6 +60,12 @@ struct EngineState(RwLock<Option<RunningEngine>>);
 struct RunningEngine {
     wrapper: AudioEngineWrapper,
     _stream: cpal::Stream,
+    /// Node ids that exist in the currently-running graph. set_param
+    /// validates against this set so a stale id from a UI graph that
+    /// has since been rebuilt produces a structured error instead of
+    /// being silently dropped by the C++ param-drain (which iterates
+    /// every node and matches on node_id, dropping unmatched cmds).
+    valid_node_ids: std::collections::HashSet<u32>,
 }
 
 // cpal::Stream is !Send, but we only touch it behind an RwLock on the main thread
@@ -262,7 +268,8 @@ fn start_engine(
     let stream = open_cpal_stream(ring, sample_rate)?;
 
     engine.start()?;
-    *guard = Some(RunningEngine { wrapper: engine, _stream: stream });
+    let valid_node_ids: std::collections::HashSet<u32> = nodes.iter().map(|n| n.id).collect();
+    *guard = Some(RunningEngine { wrapper: engine, _stream: stream, valid_node_ids });
     Ok(())
 }
 
@@ -286,11 +293,13 @@ fn set_param(
     value: f32,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
-    // Read lock: AudioEngineWrapper::set_param dispatches into a
-    // lock-free SPSC queue; concurrent UI knob updates do not need
-    // exclusive access.
     let guard = state.0.read().map_err(|e| e.to_string())?;
     if let Some(ref eng) = *guard {
+        if !eng.valid_node_ids.contains(&node_id) {
+            return Err(format!(
+                "set_param: node id {node_id} is not in the running graph (param hash 0x{param_hash:x}, value {value})"
+            ));
+        }
         eng.wrapper.set_param(node_id, param_hash, value)?;
     }
     Ok(())

@@ -1356,3 +1356,14 @@ The Rust counterpart in rust/src/lockfree_queue.rs uses the canonical pattern: o
   - *Priority*: above the deferred MIDI feature work, below additional DSP correctness items if any remain. None obvious.
 **ACT**: replaced `Mutex<Option<RunningEngine>>` with `RwLock<Option<RunningEngine>>`. start/stop use `.write()`; set_param and get_cpu_load_permil use `.read()`. Updated comment on the unsafe Send/Sync impls.
 **Result**: workspace builds clean, all crate tests pass, engine_smoke 20/20, clippy clean.
+
+## Loop 39 — Validate node_id at the set_param Tauri boundary
+**OBSERVE**: tauri-ui/src-tauri/src/main.rs:set_param accepted any u32 node_id and enqueued it into the param queue. The C++ side drains the queue and dispatches to nodes via `apply_pending_params` (cpp/include/audio_node.h:68): each node iterates and only acts when `pending[i].node_id == node_id`. Stale ids — from the UI keeping a knob handler bound after a graph rebuild, JSON imports with mismatched ids, etc. — are silently dropped. The user sees no UI feedback, just a knob that "doesn't do anything."
+**ORIENT**: priority-2 (silent failure on a critical user-facing path). The fix is a simple HashSet lookup at the host boundary.
+**DECIDE**: store a `HashSet<u32>` of valid node ids on `RunningEngine` at start_engine time; reject unknown ids in set_param with a structured error message.
+**DEVIL**:
+  - *Correctness*: the HashSet is built from the same `nodes: Vec<EngineNodeInfo>` that's already validated by `parse_engine_type` and added to ShadowGraph, so it's authoritative. Could go stale relative to the live graph if anyone added a `add_node` Tauri command — none exists today, the graph is rebuilt by full `start_engine` calls. No hidden mutability path.
+  - *Scope*: should we also validate `param_hash` against a known-hashes table? Param-hash mistakes are caught downstream by the C++ `set_param` switch's `default:` arm (silent ignore is the right behaviour for forward-compat — adding a new param shouldn't break an old engine). Keep this loop focused on node_id; param_hash is forward-compat-by-design.
+  - *Priority*: above the deferred MIDI consumer work (large feature) and the store.ts UI surface (frontend, not Rust).
+**ACT**: added `valid_node_ids: HashSet<u32>` to `RunningEngine`; populated at `start_engine`. set_param checks membership and returns a descriptive error.
+**Result**: workspace builds, all crate tests pass, engine_smoke 20/20, clippy clean.
