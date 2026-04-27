@@ -1,31 +1,32 @@
-# Next loop seed (loop 29)
+# Next loop seed (loop 30)
 
-## Target
-`cpp/include/nodes/effects.h` — full audit. Highest-priority
-patterns to look for:
+## Primary target
+`cpp/include/nodes/effects.h` `process_overdrive` — at tone=0 the
+wet path silences entirely because `tone_lp` is the IIR LP state
+that never updates when `tone == 0` (the `tone_lp += tone*(d -
+tone_lp)` step is multiplied by 0). Distortion handles this
+correctly: `shaped = tone_lp*tone + distorted*(1-tone)` so tone=0
+means "no LP filter, pass-through distorted". Overdrive should use
+the same blend.
 
-1. `EFFECT_MODE = static_cast<int>(value)` on raw param (NaN UB,
-   loop 25/27 pattern).
-2. Distortion / waveshaper saturation that uses recursion or
-   unbounded drive multipliers — input clamp before non-linearity.
-3. Bitcrusher sample-rate reducer: counter integer arithmetic must
-   not overflow on large rate-reduction factors; output must be
-   sampled-and-held correctly.
-4. Effects stack typically has `wet * effect(in) + (1-wet) * in` —
-   verify wet is clamped [0,1] and the combined result NaN-scrubbed.
-5. RT-discipline: any std::vector resize, std::string ops, or
-   heap allocation in process()? Pre-allocate in constructor.
+```cpp
+// current:
+out[i] = in[i] * (1.0f - distort_mix) + tone_lp * distort_mix;
+// should be:
+float shaped = tone_lp * tone + distorted * (1.0f - tone);
+out[i] = in[i] * (1.0f - distort_mix) + shaped * distort_mix;
+```
 
-## Guideline
-Apply same defense-in-depth as loops 25-28:
-- early `if (!std::isfinite(value)) return;` at set_param entry
-- mode enum casts: cast → range-clamp → assign
-- per-sample NaN scrub on stateful feedback paths
-- audio-thread allocation: pre-size in constructor, std::fill in setter
+This is a priority-4 logic bug: the overdrive effect produces
+silence (or near-silence) for users who set tone=0, which is a
+reasonable "off the LP" setting.
 
-## After loop 29
-Loop 30 candidates (in priority order):
-- gain.h audit (parameter automation safety)
-- output.h audit (DC-blocker / soft-clipper state)
-- The FFI boundary in `rust/src/audio_engine_wrapper.rs` for
-  param-value validation symmetry with the new C++ guards.
+## Backup target
+`cpp/include/nodes/gain.h` audit (218 lines, not yet reviewed) —
+expect set_param NaN guard + GAIN clamp + per-sample NaN scrub
+on the smoothed gain target if gain smoothing is implemented.
+
+## After loop 30
+Loop 31: gain.h audit. Loop 32: re-audit `output.h` (it's actually
+inside the audio_engine wrapper, not a standalone node header —
+need to locate the soft-clipper/DC-blocker code path).

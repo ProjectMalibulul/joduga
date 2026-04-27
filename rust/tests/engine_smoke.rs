@@ -847,3 +847,87 @@ fn delay_phaser_and_vibrato_modes_stay_bounded() {
 
     eng.stop().expect("stop");
 }
+
+/// Loop 29 regression: EffectsNode had no isfinite guard at
+/// set_param entry, used `mode = static_cast<int>(value)` for
+/// EFFECTS_MODE (NaN→int UB), and the distortion / overdrive /
+/// bitcrusher per-sample paths updated `tone_lp` (an IIR state)
+/// and `crush_held` (a sample-and-hold register) with no NaN scrub.
+/// A single poisoned input could pin the IIR or held register to
+/// NaN forever. This pins the no-crash / bounded-output contract
+/// across all 7 EffectsNode modes under a NaN/Inf parameter storm.
+#[test]
+fn effects_node_all_modes_stay_bounded_under_param_storm() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Effects, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+
+    const EFFECTS_MODE: u32 = 0xCE;
+    const DRIVE: u32 = 0xE1;
+    const TONE: u32 = 0xE2;
+    const MIX: u32 = 0xE3;
+    const BIT_DEPTH: u32 = 0xE6;
+    const RATE_REDUCE: u32 = 0xE7;
+
+    // Seed sane params.
+    eng.set_param(1, DRIVE, 10.0).expect("drive");
+    eng.set_param(1, TONE, 0.5).expect("tone");
+    eng.set_param(1, MIX, 1.0).expect("mix");
+
+    // Send rogue values — set_param's isfinite early-return must
+    // drop them without crashing or corrupting state.
+    eng.set_param(1, EFFECTS_MODE, f32::NAN).expect("NaN mode");
+    eng.set_param(1, EFFECTS_MODE, 1.0e9).expect("huge mode");
+    eng.set_param(1, EFFECTS_MODE, -1.0e9).expect("negative mode");
+    eng.set_param(1, DRIVE, f32::INFINITY).expect("Inf drive");
+    eng.set_param(1, BIT_DEPTH, f32::NAN).expect("NaN bit_depth");
+    eng.set_param(1, RATE_REDUCE, f32::NAN).expect("NaN rate");
+
+    eng.start().expect("start");
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+
+    // Cycle through every mode and assert finite + bounded output.
+    let mode_names = [
+        "DISTORTION",
+        "OVERDRIVE",
+        "BITCRUSHER",
+        "RING_MOD",
+        "WAVESHAPER",
+        "TREMOLO",
+        "STEREO_WIDENER",
+    ];
+    for (m, name) in mode_names.iter().enumerate() {
+        eng.set_param(1, EFFECTS_MODE, m as f32).expect("switch mode");
+        thread::sleep(Duration::from_millis(80));
+        let n = ring.read(&mut buf);
+        assert!(n > 0, "no samples for mode {name}");
+        let mut max_abs = 0.0_f32;
+        for (i, &s) in buf[..n].iter().enumerate() {
+            assert!(s.is_finite(), "mode {name} sample {i} non-finite ({s})");
+            max_abs = max_abs.max(s.abs());
+        }
+        // tanh / 1-exp soft clippers and the others all bounded by ~1
+        // for unit-amplitude osc input; allow generous slack for
+        // ring-mod and tremolo phase transients.
+        assert!(max_abs <= 4.0, "mode {name} output exceeded sane bound: {max_abs}");
+    }
+
+    eng.stop().expect("stop");
+}

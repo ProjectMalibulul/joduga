@@ -1054,3 +1054,78 @@ fmt + clippy --release --all-targets -- -D warnings clean.
 NaN/UB/RT patterns (FILTER_MODE-style cast UB on EFFECT_MODE,
 unbounded distortion drive recursion, bitcrusher rate-reduction
 counter overflow, missing waveshaper input clamp).
+
+## Loop 29 — EffectsNode EFFECTS_MODE NaN UB + tone_lp/crush_held NaN poisoning
+
+**OBSERVE.** `cpp/include/nodes/effects.h` 296 lines, 7 modes
+(DISTORTION/OVERDRIVE/BITCRUSHER/RING_MOD/WAVESHAPER/TREMOLO/
+STEREO_WIDENER). Audit found three priority-1 silent-corruption
+defects mirroring loops 25/27:
+
+1. `EFFECTS_MODE: mode = static_cast<int>(value)` (line 76) — NaN→int
+   UB, plus the process() `default:` arm silently bypasses processing
+   for out-of-range mode values.
+2. distortion/overdrive update `tone_lp` IIR state with no NaN
+   scrub: `tone_lp += tone*(distorted - tone_lp)` permanently
+   poisons tone_lp if `distorted` (= tanh(NaN) or exp(NaN))
+   produces NaN. Distortion is arguably the most-used effect mode.
+3. bitcrusher's `crush_held` is a sample-and-hold register; with
+   sample_rate_reduce ≤ 100, the held value can persist for 100
+   samples between updates. NaN input freezes crush_held at NaN
+   for that entire window.
+
+Also spotted (deferred to loop 30, priority 4): overdrive uses
+raw `tone_lp` instead of the tone-blended `tone_lp*tone +
+distorted*(1-tone)` that distortion uses. At tone=0 the overdrive
+wet path silences entirely because tone_lp never updates.
+
+**ORIENT.** Same defense-in-depth pattern as loops 25-28; cost is
+one isfinite per sample on the affected paths plus one branch at
+set_param. Cover all 7 modes in one regression test since none
+had any smoke coverage prior.
+
+**DECIDE.** Bundle items 1-3 (priority-1 NaN/UB family). Defer
+overdrive tone-blend bug to loop 30 alongside other effects.h
+logic-bug cleanup (process_widener is a comb filter not an
+allpass — variable name lies).
+
+**DEVIL.**
+- *Correctness*: `if (!std::isfinite(value)) return` doesn't reject
+  legitimate 0.0 params (`isfinite(0.0)` is true). EFFECTS_MODE
+  clamp `[DISTORTION=0, STEREO_WIDENER=6]` matches the actual
+  process() switch arms.
+- *Scope*: ring_mod / tremolo phase accumulators were NOT scrubbed
+  — they're inherently bounded by the wrap-to-TWO_PI logic and
+  `ring_freq`/`trem_rate` clamps prevent unbounded increments. The
+  scope is correct: only state with multiplicative feedback
+  (tone_lp's +=, crush_held's persistent register) needs NaN scrub.
+- *Priority*: Bitcrusher is rarely user-driven from the UI but is
+  a stress-test target for fuzzing — covering it costs <5 lines.
+- *Regression*: full smoke suite green (16/16). New test cycles all
+  7 modes after sending NaN/Inf to EFFECTS_MODE/DRIVE/BIT_DEPTH/
+  RATE_REDUCE; if any mode produces non-finite output the test
+  fails by mode name.
+
+**ACT.**
+- effects.h `set_param`: isfinite early-return; clamp EFFECTS_MODE
+  to [0, STEREO_WIDENER].
+- effects.h `process_distortion`: isfinite scrub on `distorted`,
+  on `tone_lp` after the IIR update, and on the final `y`.
+- effects.h `process_overdrive`: same isfinite scrubs (distorted,
+  tone_lp, y).
+- effects.h `process_bitcrusher`: scrub input before
+  round/quantize, scrub crush_held after, scrub final y.
+- engine_smoke.rs new test
+  `effects_node_all_modes_stay_bounded_under_param_storm`: Osc(440)→
+  Effects→Output, sends NaN/Inf params, then iterates all 7 modes
+  and asserts every output sample is finite + ≤4.0 with the
+  mode name in the failure message.
+
+**VERIFY.** cmake build clean. cargo test 16/16 (was 15). fmt +
+clippy --release --all-targets -- -D warnings clean.
+
+**NEXT.** Loop 30: overdrive tone-blend bug (process_overdrive
+uses raw tone_lp instead of `tone_lp*tone + distorted*(1-tone)`,
+silencing at tone=0). Plus possibly process_widener variable
+naming (`ap_buf`/`ap_pos` for a comb-filter delay line — misleading)
+or gain.h audit. Decide based on what re-OBSERVE shows.

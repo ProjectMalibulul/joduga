@@ -70,11 +70,24 @@ public:
 
     void set_param(uint32_t param_hash, float value) override
     {
+        if (!std::isfinite(value))
+            return;
         switch (param_hash)
         {
         case 0x000000CEu: // EFFECTS_MODE
-            mode = static_cast<int>(value);
+        {
+            // Guard against `static_cast<int>(NaN)` UB (already
+            // handled by the early-return above) and clamp to the
+            // declared enum range so an out-of-range cast can't
+            // drive process() into the silent default arm.
+            int m = static_cast<int>(value);
+            if (m < 0)
+                m = 0;
+            else if (m > STEREO_WIDENER)
+                m = STEREO_WIDENER;
+            mode = m;
             break;
+        }
 
         // ── Distortion (catalog hashes 0xE1, 0xE2, 0xE3) ──
         case 0xE1u: // Distortion Drive
@@ -199,10 +212,20 @@ private:
             float x = in[i] * drive;
             // Hard clipping tanh
             float distorted = std::tanh(x);
-            // Tone filter (LP)
+            // Tone filter (LP) — scrub NaN/Inf so a single poisoned
+            // input cannot permanently corrupt the IIR state
+            // (`tone_lp += tone*(NaN - tone_lp)` would otherwise
+            // pin tone_lp to NaN forever).
+            if (!std::isfinite(distorted))
+                distorted = 0.0f;
             tone_lp += tone * (distorted - tone_lp);
+            if (!std::isfinite(tone_lp))
+                tone_lp = 0.0f;
             float shaped = tone_lp * tone + distorted * (1.0f - tone);
-            out[i] = in[i] * (1.0f - distort_mix) + shaped * distort_mix;
+            float y = in[i] * (1.0f - distort_mix) + shaped * distort_mix;
+            if (!std::isfinite(y))
+                y = 0.0f;
+            out[i] = y;
         }
     }
 
@@ -221,8 +244,15 @@ private:
             {
                 distorted = -1.0f + std::exp(x);
             }
+            if (!std::isfinite(distorted))
+                distorted = 0.0f;
             tone_lp += tone * (distorted - tone_lp);
-            out[i] = in[i] * (1.0f - distort_mix) + tone_lp * distort_mix;
+            if (!std::isfinite(tone_lp))
+                tone_lp = 0.0f;
+            float y = in[i] * (1.0f - distort_mix) + tone_lp * distort_mix;
+            if (!std::isfinite(y))
+                y = 0.0f;
+            out[i] = y;
         }
     }
 
@@ -235,10 +265,21 @@ private:
             if (crush_counter >= sample_rate_reduce)
             {
                 crush_counter -= sample_rate_reduce;
-                // Quantize
-                crush_held = std::round(in[i] * levels) / levels;
+                // Quantize. NaN scrub on the input prevents
+                // crush_held from sticking at NaN until the next
+                // sample-and-hold tick (which can be hundreds of
+                // samples away at high rate-reduction).
+                float x = in[i];
+                if (!std::isfinite(x))
+                    x = 0.0f;
+                crush_held = std::round(x * levels) / levels;
+                if (!std::isfinite(crush_held))
+                    crush_held = 0.0f;
             }
-            out[i] = in[i] * (1.0f - distort_mix) + crush_held * distort_mix;
+            float y = in[i] * (1.0f - distort_mix) + crush_held * distort_mix;
+            if (!std::isfinite(y))
+                y = 0.0f;
+            out[i] = y;
         }
     }
 
