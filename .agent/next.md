@@ -1,23 +1,36 @@
-# Loop 27 candidate
+# Next loop seed (loop 28)
 
-**Audit `cpp/include/nodes/delay.h` and `cpp/include/nodes/effects.h`.**
+## Target
+`cpp/include/nodes/delay.h` `process_phaser` (around lines 311-320) —
+the dead-code overwrite makes the phaser a no-op (or worse, a wrong
+single-stage IIR) instead of a true cascaded allpass.
 
-Apply the same checklist that surfaced the priority-1 bugs in loops 23-26:
-1. Audio-thread allocation in set_param (vector::resize, vector::assign on
-   delay buffers reactive to time-param changes).
-2. NaN/Inf state poisoning in any feedback-laden node.
-3. Unguarded `static_cast<int>(value)` on subtype/mode params.
-4. Single-step phase/buffer wraps that fail under unclamped param values.
+```cpp
+float ap_val = coeff * (y - phaser_ap[s]) + y;
+float tmp    = y;
+y = phaser_ap[s] + coeff * (tmp - ap_val);   // <-- DEAD: overwritten by next line
+y = ap_val;                                  // <-- this is what actually runs
+phaser_ap[s] = ap_val;
+```
 
-Per-file priorities by likely blast radius:
-- delay.h: feedback-loop NaN poisoning (highest).
-- effects.h: subtype-driven dispatch (chorus, flanger, distortion all
-  with their own state — likely a parade of small bugs).
+The intended formula is a 1st-order allpass per stage: standard form
+is `y = -coeff*x + (x - coeff*y_prev) * something` — needs lookup
+against e.g. JOS DAFX phaser reference. Most likely what was meant:
+```
+y_new       = -coeff * y + phaser_ap[s] + coeff * y;   // allpass output
+phaser_ap[s] = y + coeff * (in - y_new);               // state update
+y = y_new;
+```
+Verify against a known phaser implementation before committing.
 
-## Backup loops
-- Filter resonance-Q ceiling per-mode (loop 25 follow-up — coefficient stability check).
-- Carrier-phase `if`-wrap in oscillator.h (defense in depth — currently safe).
-- Rate-limit `[midi]` queue-full log (loop 19 follow-up).
-- Enum-keyed `BuiltinTemplate` for compile-time-checked catalog lookups.
-- End-to-end test for loop-19 vel=0 fix through the C++ engine.
-- Audit `audio_engine_destroy` for status_register UAF window.
+## Backup target
+If phaser fix is too speculative without a reference, instead fix
+`process_vibrato` write-then-read ordering (line ~343): the write to
+`delay_buf[write_pos]` happens BEFORE the read at `write_pos - d0`,
+so when `d0 == 1` the read returns the just-written sample (zero
+delay) instead of the previous one. Swap to read-before-write.
+
+## After loop 28
+Loop 29: audit `cpp/include/nodes/effects.h` for the same NaN/UB/RT
+patterns. Distortion + bitcrusher + waveshaper are likely candidates
+for unbounded-state bugs.

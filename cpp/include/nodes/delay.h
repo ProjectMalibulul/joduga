@@ -78,12 +78,26 @@ public:
 
     void set_param(uint32_t param_hash, float value) override
     {
+        if (!std::isfinite(value))
+            return;
         switch (param_hash)
         {
         // Delay mode selector
         case 0x000000CDu: // DELAY_MODE
-            mode = static_cast<int>(value);
+        {
+            // Guard against `static_cast<int>(NaN)` UB and out-of-range
+            // mode values. Already-finite due to the early-return above,
+            // but still clamp to the declared enum range so the
+            // `default: memcpy(out, in)` arm in process() is the only
+            // bypass path for unknown modes.
+            int m = static_cast<int>(value);
+            if (m < 0)
+                m = 0;
+            else if (m > PITCH_SHIFT)
+                m = PITCH_SHIFT;
+            mode = m;
             break;
+        }
         // Simple delay
         case ParamHash::DELAY_TIME:
             delay_time_ms = std::fmax(1.0f, std::fmin(value, 2000.0f));
@@ -219,9 +233,18 @@ private:
             int read_pos = (write_pos - delay_samples + MAX_DELAY_LEN) % MAX_DELAY_LEN;
             float delayed = delay_buf[read_pos];
             float input = in[i] + delayed * feedback;
+            // NaN/Inf scrub: a single poisoned sample would otherwise
+            // recirculate through the delay line forever via the
+            // feedback term and never decay. Replace with silence so
+            // the line recovers within `delay_samples` samples.
+            if (!std::isfinite(input))
+                input = 0.0f;
             delay_buf[write_pos] = input;
             write_pos = (write_pos + 1) % MAX_DELAY_LEN;
-            out[i] = in[i] * (1.0f - mix) + delayed * mix;
+            float y = in[i] * (1.0f - mix) + delayed * mix;
+            if (!std::isfinite(y))
+                y = 0.0f;
+            out[i] = y;
         }
     }
 
@@ -238,7 +261,13 @@ private:
                 float rd = comb_bufs[c][comb_pos[c]];
                 // Low-pass damping
                 reverb_lp = rd * (1.0f - reverb_damp) + reverb_lp * reverb_damp;
-                comb_bufs[c][comb_pos[c]] = input + reverb_lp * comb_fb;
+                float feedback_in = input + reverb_lp * comb_fb;
+                if (!std::isfinite(feedback_in))
+                {
+                    feedback_in = 0.0f;
+                    reverb_lp = 0.0f;
+                }
+                comb_bufs[c][comb_pos[c]] = feedback_in;
                 comb_pos[c] = (comb_pos[c] + 1) % comb_lens[c];
                 comb_sum += rd;
             }
@@ -250,12 +279,21 @@ private:
             {
                 float buf_val = ap_bufs[a][ap_pos[a]];
                 float tmp = -ap_out * ap_g + buf_val;
-                ap_bufs[a][ap_pos[a]] = ap_out + buf_val * ap_g;
+                float store = ap_out + buf_val * ap_g;
+                if (!std::isfinite(store) || !std::isfinite(tmp))
+                {
+                    store = 0.0f;
+                    tmp = 0.0f;
+                }
+                ap_bufs[a][ap_pos[a]] = store;
                 ap_pos[a] = (ap_pos[a] + 1) % ap_lens[a];
                 ap_out = tmp;
             }
 
-            out[i] = in[i] * (1.0f - reverb_mix) + ap_out * reverb_mix;
+            float y = in[i] * (1.0f - reverb_mix) + ap_out * reverb_mix;
+            if (!std::isfinite(y))
+                y = 0.0f;
+            out[i] = y;
         }
     }
 

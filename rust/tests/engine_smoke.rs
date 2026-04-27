@@ -699,3 +699,73 @@ fn reverb_param_automation_under_load_stays_bounded() {
 
     eng.stop().expect("stop");
 }
+
+/// Loop 27 regression: DelayNode set_param did `mode = static_cast<int>(value)`
+/// with no NaN guard, and the SIMPLE_DELAY / Schroeder-reverb processing
+/// loops wrote feedback-laden values into their delay/comb/all-pass
+/// buffers without scrubbing NaN/Inf. A single poisoned input would
+/// recirculate through the feedback term forever, leaving the node
+/// permanently silent or shaped-garbage. Same bug class as loops 25-26.
+///
+/// This test pins the no-crash / bounded-output contract under: rogue
+/// non-finite mode value, max feedback, and a NaN/Inf rogue
+/// DELAY_FEEDBACK that the fix must reject.
+#[test]
+fn delay_node_rejects_rogue_params_and_stays_bounded() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Delay, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+
+    // DELAY_MODE = 0xCD; SIMPLE_DELAY = 0.
+    const DELAY_MODE: u32 = 0xCD;
+    eng.set_param(1, DELAY_MODE, 0.0).expect("set mode");
+    eng.set_param(1, param_hash::DELAY_TIME, 100.0).expect("set delay");
+    eng.set_param(1, param_hash::DELAY_FEEDBACK, 0.99).expect("max fb");
+    eng.set_param(1, param_hash::MIX, 0.7).expect("mix");
+
+    // Rogue values — set_param must drop them, not crash.
+    eng.set_param(1, DELAY_MODE, f32::NAN).expect("send NaN mode");
+    eng.set_param(1, DELAY_MODE, 1.0e9).expect("send huge mode");
+    eng.set_param(1, param_hash::DELAY_FEEDBACK, f32::INFINITY).expect("Inf fb");
+    eng.set_param(1, param_hash::DELAY_TIME, f32::NAN).expect("NaN time");
+
+    eng.start().expect("start");
+    thread::sleep(Duration::from_millis(150));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "no samples after delay rogue-param storm");
+    let mut max_abs = 0.0_f32;
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} non-finite ({s}) in DelayNode output");
+        max_abs = max_abs.max(s.abs());
+    }
+    assert!(max_abs <= 4.0, "delay output exceeded sane bound: {max_abs}");
+
+    // Switch to Schroeder reverb mode mid-stream.
+    eng.set_param(1, DELAY_MODE, 1.0).expect("switch to reverb");
+    thread::sleep(Duration::from_millis(120));
+    let n2 = ring.read(&mut buf);
+    assert!(n2 > 0, "no samples after reverb mode switch");
+    for (i, &s) in buf[..n2].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} non-finite ({s}) in reverb mode");
+    }
+
+    eng.stop().expect("stop");
+}

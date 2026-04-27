@@ -900,3 +900,90 @@ A third minor: `set_param` accepted non-finite parameter values and pushed them 
 
 Result: 38 lib + **13 smoke** + 5 ui_main = **56 tests pass**. fmt + clippy clean.
 
+
+## Loop 27 — DelayNode DELAY_MODE NaN UB + delay/comb/all-pass NaN poisoning
+
+**OBSERVE.** `cpp/include/nodes/delay.h` 376 lines. SIMPLE_DELAY,
+CHORUS, FLANGER, VIBRATO, PITCH_SHIFT, REVERB modes share one
+`delay_buf[MAX_DELAY_LEN=96000]` plus comb/all-pass arrays for
+Schroeder reverb. No allocations on the audio thread (fixed-size
+arrays, not vectors — unlike loop 26's reverb.h). Three priority-1
+defects were live:
+
+1. `DELAY_MODE: mode = static_cast<int>(value)` — same NaN→int UB as
+   the FILTER_MODE bug fixed in loop 25 (filter.h). `static_cast<int>`
+   on a non-finite float is undefined behavior in C++; the cast can
+   produce arbitrary values including out-of-range modes that the
+   subsequent switch doesn't cover (default path memcpy's unchanged,
+   so a corrupt mode silently bypasses processing).
+2. `process_delay` writes `in[i] + delayed * feedback` straight into
+   the delay buffer with no NaN/Inf scrub. Feedback is clamped to
+   [0, 0.99] so a single poisoned sample recirculates with ~1% decay
+   per round — practically never recovers.
+3. `process_reverb` writes `input + reverb_lp * comb_fb` into each
+   comb buffer and `ap_out + buf_val * ap_g` into each all-pass with
+   no scrub. Same recirculation problem; also `reverb_lp` (the IIR
+   damping state) is itself updated in-loop and could pin to NaN.
+
+**ORIENT.** Same bug class as loops 25/26. delay.h is the third-most-
+used effect node in graphs (after Output/Gain and Oscillator), and is
+the canonical target for parameter automation, so NaN robustness here
+is high-leverage.
+
+**DECIDE.** Three candidates:
+  (a) DELAY_MODE NaN guard + clamp (1-line fix, eliminates UB).
+  (b) NaN scrub in process_delay (4 lines, prevents permanent
+      poisoning of the most-used mode).
+  (c) NaN scrub in process_reverb comb + all-pass + reverb_lp (10
+      lines, prevents permanent poisoning of the second-most-used
+      mode and recovers the damping IIR).
+All three are priority-1 silent-corruption fixes; bundle them.
+
+Phaser dead code (line 316: `y = phaser_ap[s] + coeff*(tmp-ap_val);`
+overwritten on line 317 by `y = ap_val;`) is a logic bug (priority
+4) and the correct allpass-cascade formula needs spec lookup —
+deferred to loop 28. Vibrato write-then-read off-by-one likewise
+deferred.
+
+**DEVIL.**
+- *Correctness attack*: does `if (!std::isfinite(value)) return` at
+  set_param entry break legitimate set_param(0.0) calls? No —
+  `std::isfinite(0.0f)` is true; it only rejects NaN/±Inf, which
+  have no valid parameter meaning.
+- *Scope attack*: is the real bug the missing global parameter
+  validation layer rather than per-node guards? Possibly, but a
+  defense-in-depth per-node guard is the right level: the IPC ring
+  carries raw floats from JS/Rust callers and an upstream guard
+  could regress without the node noticing.
+- *Priority attack*: should we have fixed phaser dead code first?
+  No — phaser produces audibly wrong output but not silent corruption
+  of state that propagates to other nodes. NaN in delay_buf can
+  poison the mix bus and downstream nodes via the audio graph.
+- *Regression risk on reverb*: zeroing comb/all-pass writes on NaN
+  is a one-sample silent glitch vs permanent garbage, and only
+  triggers off non-finite inputs. The unconditional `reverb_lp = 0`
+  on poison resets the damping state, which is correct — the IIR
+  is exactly the value that just produced NaN, so it must be reset
+  too.
+
+**ACT.**
+- delay.h `set_param`: add `if (!std::isfinite(value)) return` early
+  guard; clamp DELAY_MODE to `[0, PITCH_SHIFT]` after the cast.
+- delay.h `process_delay`: scrub `input` and the output `y` for NaN
+  before writing buffer / output.
+- delay.h `process_reverb`: scrub the comb feedback term (and reset
+  reverb_lp on poison), scrub each all-pass write+tmp pair, scrub
+  output `y`.
+- engine_smoke.rs: new test `delay_node_rejects_rogue_params_and_stays_bounded`
+  — Osc(440)→Delay→Output graph, sets DELAY_MODE=NaN, DELAY_MODE=1e9,
+  DELAY_FEEDBACK=Inf, DELAY_TIME=NaN at audio rate, then switches to
+  reverb mode mid-stream and asserts every output sample is finite
+  and ≤4.0.
+
+**VERIFY.** `cmake --build cmake-build` → green.
+`cargo test --release --test engine_smoke` → 14 passed (was 13).
+`cargo fmt --all` clean. `cargo clippy --release --all-targets -- -D warnings` clean.
+
+**NEXT.** Loop 28: phaser dead-code in delay.h `process_phaser`
+(lines 311-319) — dead assignment masks broken allpass cascade.
+Then loop 29: audit `cpp/include/nodes/effects.h` for NaN/RT.
