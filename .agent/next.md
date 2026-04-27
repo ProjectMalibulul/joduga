@@ -1,10 +1,9 @@
-# Loop 11 candidate: ParamUpdateCmd / MIDIEventCmd / StatusRegister offset_of
+# Loop 12 candidate: C++ static_assert mirror of FFI offsets
 
-Loop 1 pinned alignment of ParamUpdateCmd and MIDIEventCmd but didn't
-pin field offsets. Add offset_of! tests for those structs and for
-StatusRegister (loop 10's ABI test family didn't cover the
-lockfree_queue cmd structs because they live in a different module).
+Loop 10/11 pinned the layout from the Rust side. Add matching
+static_assert(offsetof(...) == N, ...) lines in cpp/include/audio_engine.h
+so a C++-side reorder fails at compile time on the C++ side too —
+not just when someone happens to run cargo test. Closes the loop.
 
-Backup candidate: extract the duplicate resolve_output_node_id helpers
-into a shared module — paramaterised by a small trait so both call
-sites can reuse it.
+Backup: extract duplicate resolve_output_node_id helpers (egui +
+tauri) into a shared joduga module.

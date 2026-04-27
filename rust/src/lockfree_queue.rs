@@ -220,4 +220,43 @@ mod tests {
         assert_eq!(pq.as_ptr() as usize % 16, 0);
         assert_eq!(mq.as_ptr() as usize % 16, 0);
     }
+
+    /// Pin field layout to cpp/include/audio_engine.h:71-78. A reorder
+    /// would silently route param updates to the wrong dispatch field
+    /// (e.g. param_hash arriving in the slot that the C++ side reads as
+    /// node_id).
+    #[test]
+    fn param_update_cmd_field_offsets_match_cpp() {
+        use std::mem::offset_of;
+        assert_eq!(offset_of!(ParamUpdateCmd, node_id), 0);
+        assert_eq!(offset_of!(ParamUpdateCmd, param_hash), 4);
+        assert_eq!(offset_of!(ParamUpdateCmd, value), 8);
+        assert_eq!(offset_of!(ParamUpdateCmd, padding), 12);
+    }
+
+    /// MIDIEventCmd has no public C++ counterpart in audio_engine.h yet
+    /// but is read by the audio thread off the same queue layout.
+    /// Pinning offsets prevents silent drift when one is added.
+    #[test]
+    fn midi_event_cmd_field_offsets() {
+        use std::mem::offset_of;
+        assert_eq!(offset_of!(MIDIEventCmd, event_type), 0);
+        assert_eq!(offset_of!(MIDIEventCmd, pitch), 4);
+        assert_eq!(offset_of!(MIDIEventCmd, velocity), 8);
+        assert_eq!(offset_of!(MIDIEventCmd, timestamp_samples), 12);
+    }
+
+    /// Pin StatusRegister layout to cpp/include/audio_engine.h:83-89.
+    /// Cross-language atomic_ref / AtomicU32::from_ptr access on
+    /// cpu_load_permil depends on its offset being exactly 8.
+    #[test]
+    fn status_register_field_offsets_match_cpp() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(size_of::<StatusRegister>(), 16);
+        assert_eq!(align_of::<StatusRegister>(), 4);
+        assert_eq!(offset_of!(StatusRegister, graph_version), 0);
+        assert_eq!(offset_of!(StatusRegister, adopted_version), 4);
+        assert_eq!(offset_of!(StatusRegister, cpu_load_permil), 8);
+        assert_eq!(offset_of!(StatusRegister, reserved), 12);
+    }
 }

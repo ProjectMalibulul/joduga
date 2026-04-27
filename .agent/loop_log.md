@@ -379,3 +379,30 @@ C++ header line that must be kept in sync.
 
 **Verify:** 23 lib tests (was 19) + 1 smoke + 4 ui_main + 5 tauri
 = 33 total. fmt + clippy --workspace --all-targets -D warnings clean.
+
+## Loop 11 — offset_of pinning for cmd/status structs
+
+**Observe:** loop 1 pinned alignment (16) and total size of
+ParamUpdateCmd / MIDIEventCmd, but field offsets were unchecked.
+StatusRegister had no layout test at all, despite the C++ audio
+thread doing AtomicU32::from_ptr on cpu_load_permil at offset 8.
+
+**Decide:** Add offset_of! tests for ParamUpdateCmd, MIDIEventCmd,
+and StatusRegister, completing the FFI layout coverage that loop 10
+started.
+
+**Devil's advocate:**
+- Correctness: Rust #[repr(C)] with all-u32 fields is forced to
+  natural-order 0/4/8/12 — but that's exactly what the assertion
+  pins, so a #[repr(Rust)] slip-up surfaces immediately.
+- Scope: MIDIEventCmd has no formal C++ counterpart yet; pinning
+  is anticipatory but cheap, and the alignment test from loop 1
+  already commits to 16-byte layout.
+- Priority: lower than a behavioural test, but completes a coherent
+  ABI-coverage pass and the cost is three short tests.
+
+**Act:** Added param_update_cmd_field_offsets_match_cpp,
+midi_event_cmd_field_offsets, and status_register_field_offsets_match_cpp
+in rust/src/lockfree_queue.rs::tests.
+
+**Verify:** 26 lib tests (was 23). fmt + clippy clean.
