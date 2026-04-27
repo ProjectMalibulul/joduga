@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 // ── Shared command types (repr(C), 16 bytes each) ──────────────────────
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct ParamUpdateCmd {
     pub node_id: u32,
@@ -26,7 +26,7 @@ pub struct ParamUpdateCmd {
     pub padding: u32,
 }
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct MIDIEventCmd {
     pub event_type: u32,
@@ -201,5 +201,23 @@ mod tests {
         let mut out = [0u32; 1];
         q.dequeue(&mut out);
         assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn cmd_structs_match_cpp_alignas_contract() {
+        // C++ side declares both with alignas(16); Rust must match or the FFI
+        // ABI is silently violated. Sizes stay 16 because both structs are
+        // already 4 × u32 with no trailing padding.
+        assert_eq!(std::mem::align_of::<ParamUpdateCmd>(), 16);
+        assert_eq!(std::mem::align_of::<MIDIEventCmd>(), 16);
+        assert_eq!(std::mem::size_of::<ParamUpdateCmd>(), 16);
+        assert_eq!(std::mem::size_of::<MIDIEventCmd>(), 16);
+
+        // Vec<T> allocates at align_of::<T>(), so the queue's backing
+        // storage must now be 16-byte aligned at its base.
+        let pq = LockFreeRingBuffer::<ParamUpdateCmd>::new(8);
+        let mq = LockFreeRingBuffer::<MIDIEventCmd>::new(8);
+        assert_eq!(pq.as_ptr() as usize % 16, 0);
+        assert_eq!(mq.as_ptr() as usize % 16, 0);
     }
 }
