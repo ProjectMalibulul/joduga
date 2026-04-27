@@ -1321,3 +1321,14 @@ The Rust counterpart in rust/src/lockfree_queue.rs uses the canonical pattern: o
   - *Priority*: priority-5 (performance cliff on a realtime thread). Not blocking, but cheap to fix and aligns with the documented SPSC contract — closes a divergence that would otherwise confuse anyone porting the engine to a new platform.
 **ACT**: relaxed both own-index loads. Commented the rationale inline so future readers see the SPSC contract.
 **Result**: 20/20 engine_smoke pass, fmt clean, clippy clean.
+
+## Loop 36 — cpal stream broken on stereo-default devices
+**OBSERVE**: tauri-ui/src-tauri/src/main.rs:99-103 hard-coded `channels: 1`. On most desktop audio backends the default device is stereo (often the only supported channel count). On WASAPI / pure ALSA this would have failed `build_output_stream` with "format not supported" — a startup error users likely hit. On backends that *did* accept mono (PipeWire, CoreAudio) the callback received a buffer sized in mono frames but had no fan-out, so the ring read was correct only for genuinely mono devices. The deeper bug if cpal ever transparently up-mixed: `ring.read(buffer)` reads `buffer.len()` frames out of the mono ring, so a stereo buffer would consume the engine's output at 2× speed.
+**ORIENT**: priority-2 (configuration broken on common hardware, no diagnostic). The whole shipped Tauri shell only works correctly if the OS happens to expose a mono default device.
+**DECIDE**: query `device.default_output_config()` for the actual channel count; allocate a per-callback mono scratch buffer; fan the mono signal out across all channels.
+**DEVIL**:
+  - *Correctness*: heap-allocating `mono_scratch` lazily inside the realtime cpal callback is normally a smell, but the alloc only happens on the very first call (or on a callback-size growth, which cpal never triggers in practice with `BufferSize::Default`). `Vec::resize` to a value it already exceeds is a no-op. Could pre-size in `open_cpal_stream` if cpal exposed `default_output_config().buffer_size`, but the default is opaque. Acceptable trade-off; commented inline.
+  - *Scope*: the headless `rust/src/main.rs` test harness has no cpal — out of scope.
+  - *Priority*: priority-2 fix. Above the deferred MIDI/UI items.
+**ACT**: rewrote `open_cpal_stream` to honour the device's default channel count. Added stderr log of channel count + sample rate so users can see what device opened.
+**Result**: workspace builds clean, 20/20 engine_smoke pass, all crate tests pass, clippy clean.

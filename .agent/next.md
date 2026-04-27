@@ -1,10 +1,10 @@
-# Next loop seed (loop 36)
+# Next loop seed (loop 37)
 
-Audio thread SPSC ordering now matches the Rust side. Moving outward to other queue/concurrency surfaces.
+cpal output is now device-agnostic. Going wider.
 
-**Loop 36 candidate**: midi_input.rs reconnect/disconnect race. The midir listener pushes events into an SPSC queue; if the user hot-swaps a MIDI device the listener may rebuild while the audio thread is still draining the queue. Audit for races.
+**Loop 37 candidate**: `set_param` Tauri command (tauri-ui/src-tauri/src/main.rs:222+) takes a Mutex on every UI knob update. The audio engine is already lock-free; the lock here only protects the `Option<RunningEngine>` swap on start/stop. Consider an `RwLock` (read locks for set_param, write for start/stop) or an `ArcSwap`. UI knob storms during playback contend with the audio thread's own start/stop never, but multiple concurrent `set_param` calls all serialize on the same Mutex — preventing batched UI updates.
 
 **Backups**:
-- shadow_graph.rs add_edge cap of 1024 — confirm overflow is detected at add_edge, not just compile.
-- Frontend (tauri-ui/src/store.ts) error display for the new structured set_param error from loop 34.
-- Tauri command `set_param` (line 222+ of main.rs) uses `Mutex::lock` per knob update — every UI knob movement takes a lock contended with start/stop. Atomic pointer swap could remove that.
+- MIDI parser: mask data bytes with `& 0x7F` to defend against malformed devices that set the high bit.
+- MIDI queue **is plumbed but never drained** by audio_engine.cpp — feature gap, large change.
+- Frontend (tauri-ui/src/store.ts) error-display surface for the structured set_param error from loop 34.

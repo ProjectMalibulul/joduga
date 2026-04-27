@@ -93,20 +93,60 @@ fn resolve_output_node_id(nodes: &[EngineNodeInfo]) -> Result<u32, String> {
 }
 
 /// Open a cpal output stream that reads from the engine ring buffer.
+///
+/// The engine produces a single mono stream from its output node, but
+/// cpal devices commonly require their *default* channel count
+/// (typically stereo on desktop, sometimes 6/8 on pro audio rigs).
+/// Hard-coding `channels: 1` previously caused either a build failure
+/// on backends that reject non-default formats (WASAPI, ALSA) or, on
+/// backends that *did* accept it, the callback called `ring.read` with
+/// a `&mut [f32]` whose length was already in stereo frames — burning
+/// through the engine's mono output at 2× speed and producing
+/// underruns. Now we honour the device's default channel count and
+/// fan the mono signal out across all channels.
 fn open_cpal_stream(ring: Arc<OutputRingBuffer>, sample_rate: u32) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
     let device = host.default_output_device().ok_or("No audio output device found")?;
+    let default_config = device
+        .default_output_config()
+        .map_err(|e| format!("query default cpal output config: {e}"))?;
+    let channels: u16 = default_config.channels().max(1);
     let config = cpal::StreamConfig {
-        channels: 1,
+        channels,
         sample_rate: cpal::SampleRate(sample_rate),
         buffer_size: cpal::BufferSize::Default,
     };
+    eprintln!("[audio] cpal device default channels={channels}, sample_rate={sample_rate}");
+
+    // Per-callback scratch for the mono read; we fan-out to N channels
+    // when interleaving into the cpal buffer. Allocated lazily on the
+    // realtime thread on first call to avoid allocating before
+    // `build_output_stream` returns and to ensure the right size.
+    // It's a Vec<f32> not an array because BufferSize::Default isn't
+    // known at compile time.
+    let mut mono_scratch: Vec<f32> = Vec::new();
+    let ch = channels as usize;
+
     let stream = device
         .build_output_stream(
             &config,
             move |buffer: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                let n = ring.read(buffer);
-                for sample in &mut buffer[n..] {
+                // cpal hands us interleaved frames: buffer.len() = frames * channels.
+                let frames = buffer.len() / ch.max(1);
+                if mono_scratch.len() < frames {
+                    mono_scratch.resize(frames, 0.0);
+                }
+                let mono = &mut mono_scratch[..frames];
+                let n = ring.read(mono);
+                // Fan-out: write mono[f] to every channel of frame f.
+                for f in 0..n {
+                    let s = mono[f];
+                    for c in 0..ch {
+                        buffer[f * ch + c] = s;
+                    }
+                }
+                // Underrun: zero the rest.
+                for sample in &mut buffer[n * ch..] {
                     *sample = 0.0;
                 }
             },
