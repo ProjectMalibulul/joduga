@@ -505,3 +505,38 @@ invariant. Tests: validate_rejects_edge_with_unknown_source_node,
 validate_rejects_edge_with_unknown_target_node.
 
 **Verify:** 28 lib tests (was 26). fmt + clippy clean.
+
+## Loop 15 — End-to-end param-queue test for non-Oscillator nodes
+
+**Observe:** The loop 9 smoke test only sets OSC_FREQUENCY. If
+ParamUpdateCmd dispatch were broken for any node type other than
+Oscillator (different switch in set_param, wrong hash routing, etc.)
+the test would still pass. The actual end-to-end param plumbing for
+GainNode / FilterNode / etc. had no behavioural coverage.
+
+**Decide:** Add a second smoke test that targets the Output GainNode
+specifically. Set GAIN_LEVEL=0 mid-flight, wait for the smoother to
+settle, and assert the next window's amplitude has dropped >95% from
+the pre-cut window. Proves: param queue routes by node_id correctly,
+GainNode set_param dispatches GAIN_LEVEL, and smoothing converges in
+the documented window.
+
+**Devil's advocate:**
+- Correctness: smoothing constant 0.99 → 99.9% settled in ~14 ms; the
+  test waits 60 ms and discards that tail before measuring window 2.
+  Threshold loud*0.05 leaves >10× margin against measurement jitter.
+- Scope: still only covers GainNode (which the Output node aliases
+  to). FilterNode/EffectsNode/Reverb/Delay still untested. But this
+  exercises a fundamentally different param-hash than OSC_FREQUENCY
+  and a different dispatch path, so it does close one full failure
+  mode that the previous smoke test couldn't see.
+- Priority: priority-3 (test gap on existing functionality). The
+  GainNode dispatch is hot in real use (every Output node). Keeping
+  it untested was a real gap.
+
+**Act:** rust/tests/engine_smoke.rs — added
+output_node_gain_param_silences_stream. Reuses the same Osc→Output
+graph but mutates Output's GAIN_LEVEL and asserts amplitude collapse.
+
+**Verify:** 2/2 smoke tests pass (both ~110 ms wallclock). 28 lib +
+5 ui_main + 2 smoke = 35 joduga tests. fmt + clippy clean.

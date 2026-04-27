@@ -1,4 +1,4 @@
-# Loop 15 candidate: enum-keyed catalog (deeper fix from loop 13)
+# Loop 16 candidate: enum-keyed catalog (deeper fix from loop 13)
 
 The string-name lookups in JodugaApp::new() and elsewhere are fragile.
 Add a stable enum (BuiltinTemplate::SineOscillator etc.) used as the
@@ -7,6 +7,6 @@ demo-graph construction can never silently miss a renamed template
 because the enum variant ties source code to the catalog at compile
 time.
 
-Backup: cpu_load_permil isn't asserted to advance in engine_smoke.rs.
-Add a multi-node graph variant of the smoke test that drives the
-status register past 0.
+Backup: extend the Osc->Output smoke test to cover FilterNode params
+(FILTER_CUTOFF moves spectral content) — completes one more dispatch
+pathway.
