@@ -1,10 +1,11 @@
-# Next loop seed (loop 37)
+# Next loop seed (loop 38)
 
-cpal output is now device-agnostic. Going wider.
+Boundary surfaces (host stream, MIDI parser) hardened. Outstanding high-value items:
 
-**Loop 37 candidate**: `set_param` Tauri command (tauri-ui/src-tauri/src/main.rs:222+) takes a Mutex on every UI knob update. The audio engine is already lock-free; the lock here only protects the `Option<RunningEngine>` swap on start/stop. Consider an `RwLock` (read locks for set_param, write for start/stop) or an `ArcSwap`. UI knob storms during playback contend with the audio thread's own start/stop never, but multiple concurrent `set_param` calls all serialize on the same Mutex — preventing batched UI updates.
+**Loop 38 candidate**: Tauri command `set_param` (tauri-ui/src-tauri/src/main.rs:222+) takes `Mutex::lock()` per UI knob update, contending with start_engine/stop_engine. Replace `Mutex<Option<RunningEngine>>` with `RwLock<Option<RunningEngine>>` so concurrent set_param calls (UI knob storms) don't serialize on each other.
 
 **Backups**:
-- MIDI parser: mask data bytes with `& 0x7F` to defend against malformed devices that set the high bit.
-- MIDI queue **is plumbed but never drained** by audio_engine.cpp — feature gap, large change.
-- Frontend (tauri-ui/src/store.ts) error-display surface for the structured set_param error from loop 34.
+- shadow_graph::compile output_buffer_offset overflow audit (256 nodes × MAX_OUTPUTS could overflow u32 only at extreme combinations).
+- Frontend (tauri-ui/src/store.ts) error-display surface for the structured set_param errors (loops 34, 36, others).
+- Tauri command `set_param` does not validate node_id exists in the running engine — silently dropped if user-side stale id leaks through.
+- MIDI queue plumbed but never drained in audio_engine.cpp (large feature gap).

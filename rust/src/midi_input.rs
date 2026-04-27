@@ -75,29 +75,38 @@ pub(crate) fn parse(msg: &[u8]) -> Option<MIDIEventCmd> {
     }
 
     let status = msg[0] & 0xF0;
+    // MIDI 1.0 spec: data bytes have the high bit clear (range 0–127).
+    // Misbehaving devices and bridged MIDI from buggy software
+    // occasionally send data bytes with the high bit set, which would
+    // otherwise smear into the C++ side's pitch / velocity registers
+    // (e.g. an OOB note number or a pitch-bend value > 16383). Mask
+    // defensively so the queue never carries an out-of-spec value
+    // regardless of upstream behaviour.
+    let d1 = msg.get(1).copied().unwrap_or(0) & 0x7F;
+    let d2 = msg.get(2).copied().unwrap_or(0) & 0x7F;
     match (status, msg.len()) {
         (0x90, 3..) => {
-            let velocity = msg[2] as u32;
+            let velocity = d2 as u32;
             // NoteOn vel=0 is canonical NoteOff.
             let event_type =
                 if velocity == 0 { MidiStatus::NoteOff as u32 } else { MidiStatus::NoteOn as u32 };
-            Some(MIDIEventCmd { event_type, pitch: msg[1] as u32, velocity, timestamp_samples: 0 })
+            Some(MIDIEventCmd { event_type, pitch: d1 as u32, velocity, timestamp_samples: 0 })
         }
         (0x80, 3..) => Some(MIDIEventCmd {
             event_type: MidiStatus::NoteOff as u32,
-            pitch: msg[1] as u32,
-            velocity: msg[2] as u32,
+            pitch: d1 as u32,
+            velocity: d2 as u32,
             timestamp_samples: 0,
         }),
         (0xB0, 3..) => Some(MIDIEventCmd {
             event_type: MidiStatus::ControlChange as u32,
-            pitch: msg[1] as u32,    // controller number
-            velocity: msg[2] as u32, // controller value
+            pitch: d1 as u32,    // controller number
+            velocity: d2 as u32, // controller value
             timestamp_samples: 0,
         }),
         (0xE0, 3..) => Some(MIDIEventCmd {
             event_type: MidiStatus::PitchBend as u32,
-            pitch: ((msg[2] as u32) << 7) | (msg[1] as u32),
+            pitch: ((d2 as u32) << 7) | (d1 as u32),
             velocity: 0,
             timestamp_samples: 0,
         }),
@@ -177,6 +186,23 @@ mod tests {
     fn parse_sysex_returns_none() {
         // 0xF0 is system exclusive; we deliberately ignore it.
         assert!(parse(&[0xF0, 0x7E, 0x7F]).is_none());
+    }
+
+    #[test]
+    fn parse_strips_high_bit_on_malformed_data_bytes() {
+        // Some devices (especially via flaky USB-MIDI bridges) emit
+        // data bytes with bit 7 set. Spec-wise illegal, but we must
+        // not let that smear into the queued pitch/velocity value.
+        let cmd = parse(&[0x90, 0xFF, 0xFF]).expect("must parse");
+        assert_eq!(cmd.event_type, MidiStatus::NoteOn as u32);
+        assert_eq!(cmd.pitch, 0x7F);
+        assert_eq!(cmd.velocity, 0x7F);
+
+        // Pitch bend with both data bytes high-bit set: must mask
+        // rather than letting LSB|MSB-shifted bits collide.
+        let cmd = parse(&[0xE0, 0xFF, 0xFF]).expect("must parse");
+        assert_eq!(cmd.event_type, MidiStatus::PitchBend as u32);
+        assert_eq!(cmd.pitch, (0x7F << 7) | 0x7F);
     }
 
     #[test]

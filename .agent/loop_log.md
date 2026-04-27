@@ -1332,3 +1332,16 @@ The Rust counterpart in rust/src/lockfree_queue.rs uses the canonical pattern: o
   - *Priority*: priority-2 fix. Above the deferred MIDI/UI items.
 **ACT**: rewrote `open_cpal_stream` to honour the device's default channel count. Added stderr log of channel count + sample rate so users can see what device opened.
 **Result**: workspace builds clean, 20/20 engine_smoke pass, all crate tests pass, clippy clean.
+
+## Loop 37 — MIDI parser data-byte high-bit masking
+**OBSERVE**: rust/src/midi_input.rs::parse cast `msg[1]`, `msg[2]` to u32 directly without masking. MIDI 1.0 requires data bytes to have bit 7 clear (range 0–127), but USB-MIDI bridges and buggy device firmware can emit data bytes with bit 7 set. Without a mask:
+  - NoteOn pitch could exceed 127 → if any future C++ MIDI consumer uses pitch as an array index without bounds-checking, OOB read.
+  - PitchBend `(d2 << 7) | d1` would spill the d1 high bit into the d2-shift region, producing a corrupted 14-bit value.
+**ORIENT**: priority-7 (defense-in-depth against malformed input on a path that doesn't currently corrupt anything because MIDI isn't drained yet, but will the moment a MIDI consumer node lands). Cheap and safe.
+**DECIDE**: pre-mask both data bytes with `& 0x7F` before all parser arms.
+**DEVIL**:
+  - *Correctness*: masking can never make a spec-compliant message wrong (the high bit is required to be 0 already). Tests `parse_pitch_bend_packs_14_bits_lsb_first` and the existing channel-nibble test still pass.
+  - *Scope*: do we need to validate the status byte too? `msg[0] & 0xF0` already strips the channel nibble. Status validation is implicit in the `match` arms.
+  - *Priority*: lower than DSP/host issues, but the ones above it are larger feature-gap work (MIDI consumer integration). One of the better-scoped quick wins still remaining.
+**ACT**: extracted `d1`, `d2` from `msg.get(N).copied().unwrap_or(0) & 0x7F` (this also makes the indexing infallible, so a panic from misaligned message length is no longer possible — though the `3..` arm already guarded that). Added regression test `parse_strips_high_bit_on_malformed_data_bytes`.
+**Result**: 10/10 midi parse tests pass, 39/39 lib unit tests pass, 20/20 engine_smoke pass, clippy clean.
