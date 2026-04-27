@@ -90,19 +90,27 @@ public:
         }
         else if (param_hash == ParamHash::FM_MOD_DEPTH)
         {
-            mod_depth = value;
+            // Phase-modulation depth in radians; large values run into
+            // aliasing but won't blow up the mod_phase accumulator.
+            mod_depth = std::fmax(0.0f, std::fmin(value, 100.0f));
         }
         else if (param_hash == ParamHash::FM_MOD_FREQ)
         {
-            mod_freq = value;
+            // Clamp into the audible range. An unclamped huge value
+            // would make `mod_phase += TWO_PI * mod_freq * dt` exceed
+            // TWO_PI per sample, defeating the single-step wrap below
+            // and letting mod_phase grow without bound — sin() on huge
+            // floats then loses precision and the output decays to
+            // shaped garbage.
+            mod_freq = std::fmax(0.0f, std::fmin(value, 20000.0f));
         }
         else if (param_hash == ParamHash::AM_MOD_DEPTH)
         {
-            mod_depth = value;
+            mod_depth = std::fmax(0.0f, std::fmin(value, 100.0f));
         }
         else if (param_hash == ParamHash::AM_MOD_FREQ)
         {
-            mod_freq = value;
+            mod_freq = std::fmax(0.0f, std::fmin(value, 20000.0f));
         }
         else if (param_hash == ParamHash::DETUNE)
         {
@@ -196,7 +204,7 @@ public:
                 float mod = mod_depth * std::sin(mod_phase);
                 sample = std::sin(phase + mod);
                 mod_phase += TWO_PI * mod_freq * sample_rate_inv;
-                if (mod_phase > TWO_PI)
+                while (mod_phase > TWO_PI)
                     mod_phase -= TWO_PI;
                 break;
             }
@@ -207,7 +215,7 @@ public:
                 float mod = 1.0f + mod_depth * std::sin(mod_phase);
                 sample = carrier * mod * 0.5f;
                 mod_phase += TWO_PI * mod_freq * sample_rate_inv;
-                if (mod_phase > TWO_PI)
+                while (mod_phase > TWO_PI)
                     mod_phase -= TWO_PI;
                 break;
             }

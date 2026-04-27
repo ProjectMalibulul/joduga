@@ -1,20 +1,23 @@
-# Loop 23 candidate: audit cpp/include/nodes/oscillator.h for parameter handling
+# Loop 24 candidate
 
-OscillatorNode is the node every smoke test exercises. A regression
-there would silently corrupt every test simultaneously. Audit the
-process() implementation for:
-1. Phase accumulator wraparound (does it use modf or unbounded?)
-2. WAVEFORM_TYPE bounds checking — does an out-of-range subtype
-   default to silence or crash?
-3. Parameter smoothing on FREQ — currently abrupt? smoothed? how
-   does it sound on a sweep?
-4. NoteOn handling — does the oscillator pull from MIDI or only
-   from explicit Frequency param? (Test gap?)
+**Audit `oscillator.h::SUPER_SAW` for the same accumulator-blowup pattern.**
 
-Backup loop 23: rate-limit the [midi] queue full log added in loop 19.
+Symptom: `saw_phases[j] += TWO_PI * frequency * (1.0f + detune_amt) * sample_rate_inv`
+where `detune_amt = (j - v/2) * detune * 0.01`. `detune` is *unclamped*
+(line 109: `detune = value;`), and `voices` ranges 1-7. With v=7 and j=6
+the multiplier is `3 * detune * 0.01`. detune=1000 → factor=31, frequency=20000 →
+per-sample increment ≈ 81 rad. Single-step `if (saw_phases[j] > TWO_PI)`
+wrap fails the same way the FM/AM wrap did before loop 23.
 
-Backup loop 24: enum-keyed BuiltinTemplate (carryover).
+**Fix**: clamp DETUNE to [0, 1] (it's a 0-1 amount UI control per design.md §oscillator),
+and convert the SUPER_SAW wrap from `if` to `while` for defense in depth.
 
-Backup loop 25: add an integration test for loop 19's NoteOn vel=0
-fix that runs end-to-end through the C++ engine (i.e. verify a
-synthesizer node releases the note when fed a vel=0 event).
+**Test**: smoke test driving SUPER_SAW (waveform=11) with extreme detune,
+assert finite + bounded.
+
+## Backup loops
+- Rate-limit `[midi]` queue-full log (loop 19 follow-up).
+- Enum-keyed `BuiltinTemplate` for compile-time-checked catalog lookups.
+- End-to-end test for loop-19 vel=0 fix through the C++ engine.
+- Audit `audio_engine_destroy` for status_register UAF window.
+- Carrier-phase `if`-wrap (defense in depth — currently safe under 20 kHz clamp).

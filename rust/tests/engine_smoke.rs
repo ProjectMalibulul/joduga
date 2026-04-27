@@ -392,3 +392,72 @@ fn audio_thread_liveness_via_graph_version() {
     thread::sleep(Duration::from_millis(50));
     assert_eq!(eng.graph_version(), frozen, "graph_version advanced after stop()");
 }
+
+/// Regression test for an unclamped `FM_MOD_FREQ` blowing up the
+/// oscillator's `mod_phase` accumulator. The FM/AM cases used a
+/// single-step `if (mod_phase > TWO_PI) mod_phase -= TWO_PI` wrap, which
+/// only normalises increments smaller than `TWO_PI` per sample. With a
+/// huge mod-frequency the per-sample increment exceeds `TWO_PI` and
+/// `mod_phase` grows unboundedly, eventually feeding garbage into
+/// `std::sin` and producing NaN/Inf or denormal-shaped output.
+///
+/// Loop 23 fix: clamp `FM_MOD_FREQ`/`AM_MOD_FREQ` to the audible range
+/// (mirrors `OSC_FREQUENCY`) and harden the wrap to a `while` loop.
+#[test]
+fn fm_oscillator_with_extreme_mod_freq_stays_bounded() {
+    let mut graph = ShadowGraph::new(1);
+    graph
+        .add_node(Node {
+            id: 0,
+            node_type: NodeType::Oscillator,
+            num_inputs: 0,
+            num_outputs: 1,
+            parameters: HashMap::new(),
+        })
+        .expect("add osc");
+    graph
+        .add_node(Node {
+            id: 1,
+            node_type: NodeType::Output,
+            num_inputs: 1,
+            num_outputs: 0,
+            parameters: HashMap::new(),
+        })
+        .expect("add output");
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .expect("connect");
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng =
+        AudioEngineWrapper::new(nodes, edges, order, 1, 48_000, 256, 0).expect("engine init");
+
+    // FM waveform = 7. Carrier 440 Hz, mod depth 5.0 (radians of phase
+    // modulation), and a *deliberately absurd* mod-freq that would
+    // overrun a single-step phase wrap.
+    eng.set_param(0, param_hash::WAVEFORM_TYPE, 7.0).expect("set waveform");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+    eng.set_param(0, param_hash::FM_MOD_DEPTH, 5.0).expect("set mod depth");
+    eng.set_param(0, param_hash::FM_MOD_FREQ, 1.0e9).expect("set mod freq");
+
+    eng.start().expect("engine start");
+    thread::sleep(Duration::from_millis(120));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "engine produced no FM samples");
+
+    // Every sample must be finite and within [-1, 1] (sin output).
+    let mut max_abs = 0.0_f32;
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} is non-finite ({s}) under extreme FM_MOD_FREQ");
+        max_abs = max_abs.max(s.abs());
+    }
+    assert!(
+        max_abs <= 1.0 + 1e-3,
+        "FM output exceeded sine bound under extreme mod_freq: max |s| = {max_abs}"
+    );
+
+    eng.stop().expect("engine stop");
+}

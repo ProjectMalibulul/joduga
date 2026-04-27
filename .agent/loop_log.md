@@ -798,3 +798,28 @@ while running, frozen after stop).
 
 **Verify:** 38 lib + 5 ui_main + 8 smoke = 51 joduga tests. fmt +
 clippy clean.
+
+## Loop 23 — 2025-01-XX
+
+**OBSERVE**: Audited `cpp/include/nodes/oscillator.h`. Test counts at start: 38 lib + 8 smoke = 46. Loop 22 watchdog landed clean; no pending mid-flight work.
+
+**ORIENT**: Found a priority-1 silent-corruption bug in the FM/AM cases. `set_param` clamped `OSC_FREQUENCY` to [0.01, 20000] but `FM_MOD_FREQ`/`AM_MOD_FREQ` were stored verbatim. The per-sample mod_phase advance is `TWO_PI * mod_freq * sample_rate_inv`. With `mod_freq = 1e9` at 48 kHz that's ≈ 1.3e8 rad/sample — far exceeding `TWO_PI` — and the wrap was a single-step `if (mod_phase > TWO_PI) mod_phase -= TWO_PI;` which only normalises increments smaller than TWO_PI. Net effect: `mod_phase` grows unboundedly, `sin(mod_phase)` loses precision, FM/AM output decays into shaped garbage. NaN propagation through downstream filters/reverb is plausible.
+
+Same `if`-wrap exists for the carrier `phase` and `saw_phases`, but carrier is bounded by the existing 20 kHz frequency clamp (per-sample increment ≈ 2.62 rad < TWO_PI), and `saw_phases` is a lower-impact follow-up (deferred to next.md).
+
+**DECIDE**: Two paired fixes in `oscillator.h::set_param`:
+1. Clamp `FM_MOD_FREQ`/`AM_MOD_FREQ` to [0, 20000] (mirrors carrier clamp) and `FM_MOD_DEPTH`/`AM_MOD_DEPTH` to [0, 100] (depth in radians; large depths alias but won't blow up the accumulator).
+2. Replace the FM/AM `if` wraps with `while` loops as defense-in-depth — even if a future change relaxes the clamp, the accumulator stays bounded.
+
+**DEVIL'S ADVOCATE**:
+- *Correctness*: Clamping silently drops user requests for >20 kHz mod-freq. Defensible — anything above Nyquist (24 kHz @ 48 kHz SR) aliases anyway, and the carrier clamp is the same. The `while` is safe because per-sample increment ≤ 2.62 rad after clamping; the loop runs ≤1 iteration in steady state. *No standing.*
+- *Scope*: Fix addresses root cause (unbounded accumulator), not a symptom. The carrier-phase `if` wrap is structurally identical but safe under existing clamps; SUPER_SAW's `saw_phases` wrap is also vulnerable when paired with unclamped `detune` — added to next.md as loop-24 candidate. *Partially stands → flagged for follow-up, not bundled.*
+- *Priority*: This is silent garbage / potential NaN propagation (priority 1). No untouched higher-priority issue is known. *No standing.*
+
+**ACT**:
+- `cpp/include/nodes/oscillator.h`: clamp 4 params (FM_MOD_FREQ, FM_MOD_DEPTH, AM_MOD_FREQ, AM_MOD_DEPTH); `if` → `while` in FM and AM mod_phase wraps.
+- `rust/tests/engine_smoke.rs`: new `fm_oscillator_with_extreme_mod_freq_stays_bounded` — drives an FM oscillator with `FM_MOD_FREQ = 1e9` and `FM_MOD_DEPTH = 5.0`, then asserts every sample is finite and bounded by 1.0 + ε.
+- Pre-existing fmt drift + new clippy `explicit_auto_deref` warning on the loop-22 `cpu_load_permil` rewrite (`(*self.status_register).cpu_load_permil` → `self.status_register.cpu_load_permil` since the field is a `Box`, not raw pointer). Fixed in-place since they were direct dependencies of CI staying green.
+
+Result: 38 lib + 9 smoke + 5 ui_main = **52 tests pass**. fmt + clippy clean.
+
