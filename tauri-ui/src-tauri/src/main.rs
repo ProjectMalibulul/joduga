@@ -13,7 +13,7 @@ use joduga::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use tauri::State;
 
 /* -- types received from the frontend ----------------------- */
@@ -44,7 +44,16 @@ pub struct EngineEdgeInfo {
 
 /* -- managed state ------------------------------------------ */
 
-struct EngineState(Mutex<Option<RunningEngine>>);
+/// EngineState holds the running engine behind an `RwLock`:
+///   * start_engine / stop_engine take the write lock (mutate Option).
+///   * set_param / get_engine_cpu_load_permil take the read lock —
+///     the underlying AudioEngineWrapper enqueues into its own
+///     lock-free param queue, so multiple concurrent UI-thread
+///     callers do not need to serialize on each other. Previously a
+///     single Mutex meant a UI knob storm (multi-touch, automation
+///     bursts) serialized every set_param against every other one
+///     and against the (much rarer) start/stop commands.
+struct EngineState(RwLock<Option<RunningEngine>>);
 
 /// Holds both the C++ engine wrapper and the cpal stream.
 /// The stream must be kept alive for audio to play.
@@ -53,7 +62,7 @@ struct RunningEngine {
     _stream: cpal::Stream,
 }
 
-// cpal::Stream is !Send, but we only touch it behind a Mutex on the main thread
+// cpal::Stream is !Send, but we only touch it behind an RwLock on the main thread
 unsafe impl Send for RunningEngine {}
 unsafe impl Sync for RunningEngine {}
 
@@ -166,7 +175,7 @@ fn start_engine(
     edges: Vec<EngineEdgeInfo>,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    let mut guard = state.0.write().map_err(|e| e.to_string())?;
 
     // Stop previous engine if running
     if let Some(ref mut eng) = *guard {
@@ -259,7 +268,7 @@ fn start_engine(
 
 #[tauri::command]
 fn stop_engine(state: State<'_, EngineState>) -> Result<(), String> {
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    let mut guard = state.0.write().map_err(|e| e.to_string())?;
     if let Some(ref mut eng) = *guard {
         if let Err(e) = eng.wrapper.stop() {
             eprintln!("stop_engine warning: {e}");
@@ -277,7 +286,10 @@ fn set_param(
     value: f32,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    // Read lock: AudioEngineWrapper::set_param dispatches into a
+    // lock-free SPSC queue; concurrent UI knob updates do not need
+    // exclusive access.
+    let guard = state.0.read().map_err(|e| e.to_string())?;
     if let Some(ref eng) = *guard {
         eng.wrapper.set_param(node_id, param_hash, value)?;
     }
@@ -286,7 +298,7 @@ fn set_param(
 
 #[tauri::command]
 fn get_engine_cpu_load_permil(state: State<'_, EngineState>) -> Result<u32, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    let guard = state.0.read().map_err(|e| e.to_string())?;
     Ok(guard.as_ref().map(|eng| eng.wrapper.cpu_load_permil()).unwrap_or(0))
 }
 
@@ -294,7 +306,7 @@ fn get_engine_cpu_load_permil(state: State<'_, EngineState>) -> Result<u32, Stri
 
 fn main() {
     tauri::Builder::default()
-        .manage(EngineState(Mutex::new(None)))
+        .manage(EngineState(RwLock::new(None)))
         .invoke_handler(tauri::generate_handler![
             start_engine,
             stop_engine,

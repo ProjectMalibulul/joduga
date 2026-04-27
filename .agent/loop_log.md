@@ -1345,3 +1345,14 @@ The Rust counterpart in rust/src/lockfree_queue.rs uses the canonical pattern: o
   - *Priority*: lower than DSP/host issues, but the ones above it are larger feature-gap work (MIDI consumer integration). One of the better-scoped quick wins still remaining.
 **ACT**: extracted `d1`, `d2` from `msg.get(N).copied().unwrap_or(0) & 0x7F` (this also makes the indexing infallible, so a panic from misaligned message length is no longer possible — though the `3..` arm already guarded that). Added regression test `parse_strips_high_bit_on_malformed_data_bytes`.
 **Result**: 10/10 midi parse tests pass, 39/39 lib unit tests pass, 20/20 engine_smoke pass, clippy clean.
+
+## Loop 38 — Mutex → RwLock for EngineState
+**OBSERVE**: EngineState wrapped `Option<RunningEngine>` in `Mutex`. Every Tauri command (start/stop/set_param/get_cpu_load) took the same exclusive lock. set_param is invoked once per UI knob movement — a multi-touch session or modulation-bus update sweep produces hundreds of calls/second, all serializing on each other and against the rare start/stop commands. The audio thread itself is lock-free (param goes through SPSC), but the host-side Mutex was a synthetic bottleneck.
+**ORIENT**: priority-5 (performance cliff under realistic UI load). Cheap to fix; no API change.
+**DECIDE**: switch to `RwLock`. start_engine and stop_engine take write locks (mutate the Option). set_param and get_cpu_load_permil take read locks — they only call methods on the inner wrapper and the wrapper itself is internally synchronized via the lock-free queue.
+**DEVIL**:
+  - *Correctness*: parking_lot is not in-tree — std `RwLock` it is. std `RwLock::read` returns `LockResult<RwLockReadGuard>`, same poisoning semantics as Mutex. The `cpu_load_permil` method on AudioEngineWrapper takes `&self` (verified via grep — `pub fn cpu_load_permil(&self)`), and `set_param` is `&self`. RwLock-read access is sufficient.
+  - *Scope*: are there any `&mut self` methods of AudioEngineWrapper called from set_param or get_cpu_load? `set_param(&self, ...)` and `cpu_load_permil(&self)` — both immutable receivers. Good.
+  - *Priority*: above the deferred MIDI feature work, below additional DSP correctness items if any remain. None obvious.
+**ACT**: replaced `Mutex<Option<RunningEngine>>` with `RwLock<Option<RunningEngine>>`. start/stop use `.write()`; set_param and get_cpu_load_permil use `.read()`. Updated comment on the unsafe Send/Sync impls.
+**Result**: workspace builds clean, all crate tests pass, engine_smoke 20/20, clippy clean.
