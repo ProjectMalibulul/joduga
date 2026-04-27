@@ -1,10 +1,19 @@
-# Next loop seed (loop 34)
+# Next loop seed (loop 35)
 
-DSP correctness surface scrubbed. Time to harden the host/middleware boundary.
+The realtime DSP path and the host startup path are now hardened. Drilling into the live param-update path next.
 
-**Loop 34 candidate**: tauri-ui/src-tauri/src/main.rs `start_engine` Tauri command at lines 184/196 wraps `engine.set_param(...)` with `let _ = ...`, silently discarding errors. The set_param queue is finite (lock-free SPSC); when the UI smashes a knob faster than the audio thread drains it, errors get swallowed and the user sees no feedback. Surface the failure to the UI as a structured warning return so the React store can display "param dropped" diagnostics.
+**Loop 35 candidate**: cpp/src/audio_engine.cpp param-drain at lines 153-167. Currently the loop:
+1. Loads tail with Acquire.
+2. Loads head with Acquire (should be Relaxed — it's the consumer-owned index).
+3. Computes `avail`.
+4. Drains into `pending_params`.
+5. Stores tail with default ordering.
+
+The Acquire on the consumer's own head is a wasted barrier — Acquire only matters for the producer's tail (it synchronizes with the producer's Release). The store of the new tail at the end should be Release (publishes "we're done with these slots") — currently ordering not specified in this snippet, may default to seq_cst which is over-strong.
+
+Audit and align with the SPSC pattern documented in DESIGN.md / lockfree_queue.rs.
 
 **Backup**:
-- audio_engine.cpp param-drain memory-ordering audit.
-- midi_input.rs bounds + reconnect race.
-- shadow_graph.rs cycle detection: verify Kahn implementation handles disconnected components correctly.
+- midi_input.rs reconnect/disconnect race with the queue producer side.
+- shadow_graph.rs edge cap of 1024 — is overflow detected at add_edge or only at compile?
+- Frontend (tauri-ui/src/store.ts) error display: the new structured set_param error from loop 34 needs a UI surface.

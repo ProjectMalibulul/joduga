@@ -178,10 +178,19 @@ fn start_engine(
         0,
     )?;
 
-    // Send initial param values
+    // Send initial param values. Previously we used `let _ = ...` to
+    // discard errors; that silently dropped knob updates if the param
+    // queue ever filled (cap 8192, drained by the audio thread which
+    // has not started yet on this code path) or if the FFI call
+    // failed for any reason. With graphs pushing >1k initial params
+    // the queue can come close to capacity, and a silent drop here
+    // means the C++ node is left running with whatever its compile-
+    // time defaults were. Surface the failure instead.
     for n in &nodes {
         for p in &n.params {
-            let _ = engine.set_param(n.id, p.hash, p.value);
+            engine.set_param(n.id, p.hash, p.value).map_err(|e| {
+                format!("set_param failed for node {} hash 0x{:x}: {e}", n.id, p.hash)
+            })?;
         }
         // Send mode-select param so the C++ node initialises to the right subtype
         let mode_hash: Option<u32> = match n.engine_type.as_str() {
@@ -193,7 +202,9 @@ fn start_engine(
             _ => None,
         };
         if let Some(h) = mode_hash {
-            let _ = engine.set_param(n.id, h, n.engine_subtype as f32);
+            engine.set_param(n.id, h, n.engine_subtype as f32).map_err(|e| {
+                format!("set_param (mode) failed for node {} hash 0x{:x}: {e}", n.id, h)
+            })?;
         }
     }
 

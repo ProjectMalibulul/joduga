@@ -1296,3 +1296,14 @@ remaining priority-1 candidates:
   - *Priority*: loop 32 closed the last priority-1 surface in primary nodes. This is now the highest-leverage outstanding correctness item.
 **ACT**: edited overdrive blend to match distortion. Added smoke test that drives a 440Hz sine at drive=8, distort_mix=1.0, tone=0 and asserts RMS>0.05 (pre-fix RMS would be ~0). Bounded by final-stage clamp.
 **Result**: 20/20 smoke tests pass, clippy clean.
+
+## Loop 34 — Surface set_param errors in start_engine
+**OBSERVE**: tauri-ui/src-tauri/src/main.rs:184,196 wrapped `engine.set_param(n.id, ...)` with `let _ = ...`. The only failure mode of set_param is "param queue full" (cap 8192). The audio thread that drains the queue has NOT started yet at this point in start_engine (line 204), so any large graph that pushes >8192 params during init silently drops the overflow — leaving C++ nodes initialised with their compile-time defaults instead of the user-supplied values. UI shows "engine started" with no indication of dropped params.
+**ORIENT**: priority-2 missing error handling on a critical path. The user has no way to detect that their saved patch was partially loaded.
+**DECIDE**: replace the silent swallows with `?` propagation, formatting a structured error message that includes the offending node id and param hash.
+**DEVIL**:
+  - *Correctness*: could surface false positives if start_engine is ever called on a graph that previously worked? Currently param queue capacity 8192 is far above realistic graph size (256 nodes × 5 params = 1280), so this would only fire on a genuine bug — a queue corruption or runaway init loop. Failing loud is correct.
+  - *Scope*: only the start_engine path; the live `set_param` Tauri command (line 222+) already returns Result<(), String>. No symptom-vs-cause confusion — root cause is the bare `let _`.
+  - *Priority*: midi_input bounds and graph cycle edge cases also exist, but those have different blast radius. This is the highest-leverage error-handling gap on the load-patch flow.
+**ACT**: replaced both `let _ = engine.set_param(...)` lines with `engine.set_param(...).map_err(|e| format!(...))?` carrying node id and param hash for diagnosability.
+**Result**: full workspace builds clean. 20/20 engine_smoke tests pass. shadow_graph + lockfree_queue tests pass. clippy clean.
