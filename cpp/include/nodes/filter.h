@@ -82,7 +82,19 @@ public:
         }
         else if (param_hash == ParamHash::FILTER_MODE)
         {
-            mode = static_cast<int>(value);
+            // `static_cast<int>(NaN)` and out-of-range float→int casts
+            // are undefined behavior in C++. Reject NaN/Inf and clamp
+            // to the declared enum range; unknown but in-range values
+            // still fall through to LP via the `default:` switch arm.
+            if (std::isfinite(value))
+            {
+                int m = static_cast<int>(value);
+                if (m < 0)
+                    m = 0;
+                else if (m > VOWEL)
+                    m = VOWEL;
+                mode = m;
+            }
         }
         else if (param_hash == ParamHash::COMB_DELAY)
         {
@@ -149,14 +161,32 @@ public:
             // Direct Form II Transposed biquad
             float x = in[i];
             float y = b0 * x + z1;
+
+            // Soft-clip the *output sample* before it feeds back into
+            // state. The previous order updated z1/z2 with the
+            // unclipped y, so under high resonance / unstable
+            // coefficients the state would still explode and propagate
+            // NaN/Inf into every subsequent sample even though the
+            // output looked clamped. Clipping first bounds the
+            // recursion's contribution from `-a1*y` and `-a2*y`.
+            if (y > 4.0f)
+                y = 4.0f;
+            else if (y < -4.0f)
+                y = -4.0f;
+
             z1 = b1 * x - a1 * y + z2;
             z2 = b2 * x - a2 * y;
 
-            // Soft-clip to prevent explosions at high resonance
-            if (y > 4.0f)
-                y = 4.0f;
-            if (y < -4.0f)
-                y = -4.0f;
+            // Defense in depth: if a NaN ever enters the recursion via
+            // the input or a denormal coefficient combination, scrub
+            // the state so the filter recovers within one sample
+            // instead of staying poisoned indefinitely.
+            if (!std::isfinite(z1) || !std::isfinite(z2))
+            {
+                z1 = 0.0f;
+                z2 = 0.0f;
+                y = 0.0f;
+            }
 
             out[i] = y;
         }

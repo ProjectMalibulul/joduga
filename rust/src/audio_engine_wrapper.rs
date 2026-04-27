@@ -86,9 +86,10 @@ impl AudioEngineWrapper {
         let param_queue = LockFreeRingBuffer::<ParamUpdateCmd>::new(8192);
         let midi_queue = LockFreeRingBuffer::<MIDIEventCmd>::new(4096);
         let mut status_register = Box::new(StatusRegister {
-            graph_version: AtomicU32::new(0),
-            adopted_version: AtomicU32::new(0),
-            reserved: [0, 0],
+            graph_version: 0,
+            adopted_version: 0,
+            cpu_load_permil: 0,
+            reserved: 0,
         });
 
         // Build CompiledGraph from owned vecs.
@@ -211,6 +212,43 @@ impl AudioEngineWrapper {
     /// Clone the `Arc` to the output ring for the cpal callback.
     pub fn output_ring(&self) -> Arc<OutputRingBuffer> {
         Arc::clone(&self.output_ring)
+    }
+
+    pub fn cpu_load_permil(&self) -> u32 {
+        // SAFETY: `cpu_load_permil` is a naturally aligned u32 that C++ updates atomically
+        // via std::atomic_ref. All Rust accesses go through this function and use atomic
+        // operations only. We obtain a raw pointer with `addr_of!` to avoid creating a
+        // reference to memory that may be concurrently modified from C++.
+        unsafe {
+            let ptr = std::ptr::addr_of!(self.status_register.cpu_load_permil) as *mut u32;
+            AtomicU32::from_ptr(ptr).load(Ordering::Acquire)
+        }
+    }
+
+    /// Read the current graph_version counter that the C++ audio thread
+    /// increments every block (~187 Hz at 48 kHz / 256 frames). Used by
+    /// `is_audio_thread_alive` to detect a hung audio thread.
+    pub fn graph_version(&self) -> u32 {
+        unsafe {
+            AtomicU32::from_ptr(&self.status_register.graph_version as *const u32 as *mut u32)
+                .load(Ordering::Acquire)
+        }
+    }
+
+    /// Returns true if `graph_version` advances during `timeout`.
+    ///
+    /// A stuck audio thread (deadlock, infinite loop in a node) leaves
+    /// the counter frozen, the output ring drains to silence, and the
+    /// UI shows no diagnostic. This helper is the primitive the host
+    /// can poll to surface that condition.
+    ///
+    /// Caller must pick `timeout` ≥ a few block periods to avoid false
+    /// negatives on slow systems; 50 ms (≈9 blocks at 48 kHz/256) is
+    /// usually sufficient.
+    pub fn is_audio_thread_alive(&self, timeout: std::time::Duration) -> bool {
+        let before = self.graph_version();
+        std::thread::sleep(timeout);
+        self.graph_version() != before
     }
 }
 

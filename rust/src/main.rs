@@ -6,6 +6,7 @@
 use joduga::{
     audio_engine_wrapper::AudioEngineWrapper,
     ffi::NodeType,
+    param_hash,
     shadow_graph::{Edge, Node, ShadowGraph},
 };
 use std::collections::HashMap;
@@ -71,12 +72,12 @@ fn main() {
     thread::sleep(Duration::from_secs(1));
 
     // tweak oscillator frequency → 880 Hz
-    engine.set_param(0, 0x811C_9DC5, 880.0).expect("set_param osc freq");
+    engine.set_param(0, param_hash::OSC_FREQUENCY, 880.0).expect("set_param osc freq");
     eprintln!("osc freq → 880 Hz");
     thread::sleep(Duration::from_secs(2));
 
     // tweak filter cutoff → 2000 Hz
-    engine.set_param(1, 0x811C_9DC5, 2000.0).expect("set_param filter freq");
+    engine.set_param(1, param_hash::FILTER_CUTOFF, 2000.0).expect("set_param filter freq");
     eprintln!("filter cutoff → 2000 Hz");
     thread::sleep(Duration::from_secs(2));
 

@@ -13,6 +13,7 @@ pub mod audio_engine_wrapper;
 pub mod ffi;
 pub mod lockfree_queue;
 pub mod midi_input;
+pub mod param_hash;
 pub mod shadow_graph;
 
 pub use audio_engine_wrapper::{AudioEngineWrapper, OutputRingBuffer};

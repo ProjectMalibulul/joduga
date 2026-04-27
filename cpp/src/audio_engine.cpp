@@ -8,6 +8,7 @@
 #include "nodes/gain.h"
 #include "nodes/delay.h"
 #include "nodes/effects.h"
+#include "nodes/reverb.h"
 #include "platform/rt_platform.h"
 
 #include <thread>
@@ -38,19 +39,23 @@ struct AudioEngineImpl
     std::vector<uint32_t> execution_order;                // stores node_ids
     uint32_t output_node_id = 0;
 
-    // Inter-node scratch buffers (indexed by slot)
+    // Inter-node scratch buffers, one per node *output* (not per node).
+    // Indexed by `output_buffer_offset[slot] + output_idx` so multi-output
+    // nodes get distinct buffers for each output port.
     std::vector<std::vector<float>> scratch_buffers;
+    std::vector<uint32_t> output_buffer_offset; // size == nodes.size()
 
     // Pre-built wiring  (slot indices, not node IDs)
     struct SlotConn
     {
         uint32_t from_slot;
+        uint32_t from_output;
         uint32_t to_slot;
         uint32_t to_input;
     };
     std::vector<SlotConn> slot_connections;
-    // Which slot is the output node (its scratch buffer is copied to ring)
-    int32_t output_feeder_slot = -1;
+    // Index into scratch_buffers that the output node fills (its output 0).
+    int32_t output_feeder_buffer = -1;
 
     // Lock-free queues (Rust-owned memory)
     const void *param_queue_buffer = nullptr;
@@ -99,6 +104,9 @@ static std::unique_ptr<AudioNode> create_node(NodeType type, uint32_t node_id)
     case NODE_TYPE_EFFECTS:
         node = std::make_unique<EffectsNode>();
         break;
+    case NODE_TYPE_REVERB:
+        node = std::make_unique<ReverbNode>();
+        break;
     default:
         std::cerr << "[joduga] Unknown node type: " << type << "\n";
         return nullptr;
@@ -126,7 +134,8 @@ static void audio_thread_main(AudioEngineImpl *e)
     const uint64_t block_ns =
         static_cast<uint64_t>(e->block_size) * 1000000000ULL / e->sample_rate;
 
-    auto get_now_ns = []() -> uint64_t {
+    auto get_now_ns = []() -> uint64_t
+    {
         auto now = std::chrono::steady_clock::now();
         return std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
     };
@@ -136,10 +145,18 @@ static void audio_thread_main(AudioEngineImpl *e)
 
     while (e->is_running.load(std::memory_order_acquire))
     {
+        const uint64_t loop_start_ns = get_now_ns();
+
         // ── Drain param queue ────────────────────────────────────
         uint32_t num_params = 0;
         {
-            size_t tail = e->param_queue_tail->load(std::memory_order_acquire);
+            // Consumer-side SPSC pattern (mirrors Rust producer in
+            // rust/src/lockfree_queue.rs): own index = Relaxed,
+            // remote index = Acquire, publish-own = Release.
+            // The previous code loaded own-tail with Acquire, which
+            // is a wasted barrier on weakly-ordered targets (Apple
+            // Silicon / ARM map Acquire to `ldar`).
+            size_t tail = e->param_queue_tail->load(std::memory_order_relaxed);
             size_t head = e->param_queue_head->load(std::memory_order_acquire);
             uint32_t avail = (head >= tail)
                                  ? static_cast<uint32_t>(head - tail)
@@ -170,12 +187,16 @@ static void audio_thread_main(AudioEngineImpl *e)
             for (const auto &c : e->slot_connections)
             {
                 if (c.to_slot == slot && c.to_input < MAX_AUDIO_INPUTS)
-                    inputs[c.to_input] = e->scratch_buffers[c.from_slot].data();
+                {
+                    uint32_t buf_idx = e->output_buffer_offset[c.from_slot] + c.from_output;
+                    inputs[c.to_input] = e->scratch_buffers[buf_idx].data();
+                }
             }
 
             float *outputs[MAX_AUDIO_OUTPUTS] = {};
+            uint32_t out_base = e->output_buffer_offset[slot];
             for (uint32_t i = 0; i < node->num_outputs; ++i)
-                outputs[i] = e->scratch_buffers[slot].data();
+                outputs[i] = e->scratch_buffers[out_base + i].data();
 
             node->process(inputs, outputs, e->block_size,
                           e->pending_params.data(), num_params);
@@ -184,25 +205,58 @@ static void audio_thread_main(AudioEngineImpl *e)
         e->sample_count.fetch_add(e->block_size, std::memory_order_release);
 
         // ── Copy output to ring buffer ───────────────────────────
-        if (e->output_ring_buffer && e->output_feeder_slot >= 0)
+        if (e->output_ring_buffer && e->output_feeder_buffer >= 0)
         {
-            size_t oh = e->output_ring_head->load(std::memory_order_acquire);
+            // Producer-side SPSC pattern: own index (head) = Relaxed,
+            // remote index (tail, written by the cpal consumer) =
+            // Acquire, publish (head store) = Release. The previous
+            // load of our own head used Acquire — wasted on ARM.
+            size_t oh = e->output_ring_head->load(std::memory_order_relaxed);
             size_t ot = e->output_ring_tail->load(std::memory_order_acquire);
             uint32_t cap = e->output_ring_capacity;
             size_t used = (oh >= ot) ? (oh - ot) : (cap - ot + oh);
             size_t free = cap - used - 1;
             uint32_t to_write = std::min(e->block_size, static_cast<uint32_t>(free));
 
-            const float *src = e->scratch_buffers[e->output_feeder_slot].data();
+            const float *src = e->scratch_buffers[e->output_feeder_buffer].data();
             for (uint32_t i = 0; i < to_write; ++i)
-                e->output_ring_buffer[(oh + i) & (cap - 1)] = src[i];
+            {
+                // Final defense before the audio device. The graph
+                // is hardened layer-by-layer (oscillator/filter/
+                // delay/reverb/effects/gain all NaN-scrub their
+                // own state and outputs in loops 23-30) but a
+                // single non-finite sample reaching the DAC can
+                // cause driver-level clicks or in extreme cases
+                // a sound-server fault. We hard-clamp to ±1.0 at
+                // the boundary, which is what the device would do
+                // anyway (often as audible hard distortion). NaN
+                // is mapped to silence, not a clamp endpoint.
+                float s = src[i];
+                if (!std::isfinite(s))
+                    s = 0.0f;
+                else if (s > 1.0f)
+                    s = 1.0f;
+                else if (s < -1.0f)
+                    s = -1.0f;
+                e->output_ring_buffer[(oh + i) & (cap - 1)] = s;
+            }
 
             e->output_ring_head->store((oh + to_write) & (cap - 1),
                                        std::memory_order_release);
         }
 
         if (e->status_register)
-            reinterpret_cast<std::atomic<uint32_t>*>(&e->status_register->graph_version)->fetch_add(1u, std::memory_order_release);
+        {
+            std::atomic_ref<uint32_t> graph_version_ref(e->status_register->graph_version);
+            graph_version_ref.fetch_add(1u, std::memory_order_release);
+
+            const uint64_t proc_ns = get_now_ns() - loop_start_ns;
+            const uint32_t load_permil = static_cast<uint32_t>(std::min<uint64_t>(
+                4000u,
+                (proc_ns * 1000u) / (block_ns ? block_ns : 1u)));
+            std::atomic_ref<uint32_t> cpu_load_ref(e->status_register->cpu_load_permil);
+            cpu_load_ref.store(load_permil, std::memory_order_release);
+        }
 
         // ── Deadline-based pacing ────────────────────────────────
         // Sleep only the remaining time until the next block deadline.
@@ -244,6 +298,46 @@ extern "C"
             return nullptr;
         }
 
+        // Defensive sanity checks on the FFI inputs.  The Rust side
+        // (ShadowGraph::validate) already enforces these, but the engine
+        // is also exposed as a plain C ABI and may be linked against
+        // other hosts in the future; a malformed graph silently producing
+        // no audio (or, worse, dereferencing a null nodes pointer) is a
+        // priority-1 failure mode.
+        if (config->block_size == 0)
+        {
+            std::cerr << "[joduga] config->block_size is zero\n";
+            return nullptr;
+        }
+        if (graph->num_nodes > 0 && graph->nodes == nullptr)
+        {
+            std::cerr << "[joduga] graph->nodes is null but num_nodes > 0\n";
+            return nullptr;
+        }
+        if (graph->num_in_order > 0 && graph->execution_order == nullptr)
+        {
+            std::cerr << "[joduga] graph->execution_order is null but num_in_order > 0\n";
+            return nullptr;
+        }
+        if (graph->num_connections > 0 && graph->connections == nullptr)
+        {
+            std::cerr << "[joduga] graph->connections is null but num_connections > 0\n";
+            return nullptr;
+        }
+        // Lock-free queue index math uses (cap - 1) as a power-of-two mask.
+        // A non-power-of-two capacity would silently wrap incorrectly and
+        // leak commands.  Reject at boot rather than at runtime.
+        auto is_pow2_or_zero = [](uint32_t v) {
+            return v == 0 || (v & (v - 1)) == 0;
+        };
+        if (!is_pow2_or_zero(param_queue_capacity) ||
+            !is_pow2_or_zero(midi_queue_capacity) ||
+            !is_pow2_or_zero(output_ring_capacity))
+        {
+            std::cerr << "[joduga] queue capacities must be powers of two\n";
+            return nullptr;
+        }
+
         auto e = std::make_unique<AudioEngineImpl>();
         e->sample_rate = config->sample_rate;
         e->block_size = config->block_size;
@@ -267,6 +361,18 @@ extern "C"
                                   graph->execution_order + graph->num_in_order);
         e->output_node_id = graph->output_node_id;
 
+        // Reject graphs whose declared output_node_id wasn't created above.
+        // Without this check, the engine would still start, the per-block
+        // ring-feed lookup at line ~337 would silently fail, and the host
+        // would see an audio stream that runs but is permanently silent.
+        if (graph->num_nodes > 0 &&
+            e->node_id_to_slot.find(e->output_node_id) == e->node_id_to_slot.end())
+        {
+            std::cerr << "[joduga] output_node_id " << e->output_node_id
+                      << " is not present in graph->nodes\n";
+            return nullptr;
+        }
+
         // Pre-build slot-based connections for O(1) lookup in the audio thread
         for (uint32_t i = 0; i < graph->num_connections; ++i)
         {
@@ -275,23 +381,48 @@ extern "C"
             auto tit = e->node_id_to_slot.find(c.to_node_id);
             if (fit == e->node_id_to_slot.end() || tit == e->node_id_to_slot.end())
                 continue;
+            // Drop edges whose source output index is out of range for the
+            // resolved C++ node — guards against descriptor/node disagreement.
+            uint32_t from_outs = e->nodes[fit->second]->num_outputs;
+            if (c.from_output_idx >= from_outs)
+            {
+                std::cerr << "[joduga] dropping edge: from_output_idx "
+                          << c.from_output_idx << " >= node num_outputs "
+                          << from_outs << "\n";
+                continue;
+            }
             e->slot_connections.push_back({static_cast<uint32_t>(fit->second),
+                                           c.from_output_idx,
                                            static_cast<uint32_t>(tit->second),
                                            c.to_input_idx});
         }
 
-        // Cache the output node's own slot so we copy its processed scratch
-        // buffer to the ring (not the raw feeder).
+        // Build per-output scratch buffer offsets and allocate one buffer per
+        // node output. Multi-output nodes used to alias all their outputs to
+        // a single per-slot scratch buffer; that silently corrupted audio the
+        // moment a node had num_outputs > 1.
+        e->output_buffer_offset.resize(e->nodes.size());
+        uint32_t total_outputs = 0;
+        for (size_t s = 0; s < e->nodes.size(); ++s)
         {
-            auto oit = e->node_id_to_slot.find(e->output_node_id);
-            if (oit != e->node_id_to_slot.end())
-                e->output_feeder_slot = static_cast<int32_t>(oit->second);
+            e->output_buffer_offset[s] = total_outputs;
+            total_outputs += e->nodes[s]->num_outputs;
         }
-
-        // Allocate scratch buffers
-        e->scratch_buffers.resize(e->nodes.size());
+        e->scratch_buffers.resize(total_outputs);
         for (auto &buf : e->scratch_buffers)
             buf.resize(e->block_size, 0.0f);
+
+        // Cache the buffer index of the output node's primary output (idx 0)
+        // so the ring-copy step doesn't need to recompute it per block.
+        {
+            auto oit = e->node_id_to_slot.find(e->output_node_id);
+            if (oit != e->node_id_to_slot.end() &&
+                e->nodes[oit->second]->num_outputs > 0)
+            {
+                e->output_feeder_buffer =
+                    static_cast<int32_t>(e->output_buffer_offset[oit->second]);
+            }
+        }
 
         // Store queue pointers
         e->param_queue_buffer = param_queue_buffer;
@@ -324,7 +455,17 @@ extern "C"
         auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
         if (!e)
             return -1;
-        e->is_running.store(true, std::memory_order_release);
+        // Atomically transition stopped → running. Without this CAS, a
+        // second start() while the first thread is still running would
+        // move-assign a new std::thread over a still-joinable handle,
+        // calling std::terminate per the C++ spec — a crash, not a noop.
+        bool expected = false;
+        if (!e->is_running.compare_exchange_strong(
+                expected, true,
+                std::memory_order_acq_rel, std::memory_order_acquire))
+        {
+            return -2; // already running
+        }
         e->audio_thread = std::thread(audio_thread_main, e);
         return 0;
     }
@@ -334,7 +475,14 @@ extern "C"
         auto *e = reinterpret_cast<AudioEngineImpl *>(engine_opaque);
         if (!e)
             return -1;
-        e->is_running.store(false, std::memory_order_release);
+        // Symmetric CAS: only one stop() can win the join().
+        bool expected = true;
+        if (!e->is_running.compare_exchange_strong(
+                expected, false,
+                std::memory_order_acq_rel, std::memory_order_acquire))
+        {
+            return 0; // already stopped — idempotent no-op
+        }
         if (e->audio_thread.joinable())
             e->audio_thread.join();
         return 0;

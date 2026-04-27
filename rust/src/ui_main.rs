@@ -21,9 +21,11 @@ use joduga::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-// ── FNV-1a param hashes (must match C++ engine) ────────────────────────────
-const H_FREQ: u32 = 0x811C9DC5;
-const H_RES: u32 = 0x050C5D2E;
+// ── FNV-1a param hashes — re-exported from the canonical mirror table ──────
+// See `joduga::param_hash` for the full set; these aliases keep the file's
+// existing call sites compact.
+const H_FREQ: u32 = joduga::param_hash::FREQ;
+const H_RES: u32 = joduga::param_hash::RES;
 
 // ── Colors ──────────────────────────────────────────────────────────────────
 const BG: egui::Color32 = egui::Color32::from_rgb(18, 18, 24);
@@ -1046,11 +1048,24 @@ impl JodugaApp {
     fn new() -> Self {
         let cat = catalog();
 
-        // Find template indices for the default demo chain
-        let osc_idx = 0; // Sine Oscillator
-        let flt_idx = cat.iter().position(|t| t.name == "Low-Pass Filter").unwrap_or(14);
-        let gain_idx = cat.iter().position(|t| t.name == "Gain").unwrap_or(32);
-        let out_idx = cat.iter().position(|t| t.name == "Speaker Output").unwrap_or(cat.len() - 1);
+        // Locate templates by name. A missing template is a catalog drift
+        // bug; a silent unwrap_or(<index>) fallback boots the demo graph
+        // with completely wrong node types (e.g. flt_idx=14 → Reverb,
+        // gain_idx=32 → out-of-range), which then mis-routes audio. Fail
+        // fast with the offending name so the regression surfaces at app
+        // startup instead of as garbled sound.
+        let find = |name: &str| -> usize {
+            cat.iter().position(|t| t.name == name).unwrap_or_else(|| {
+                panic!(
+                    "default-graph template '{name}' missing from catalog \
+                     (catalog drift — update JodugaApp::new())"
+                )
+            })
+        };
+        let osc_idx = find("Sine Oscillator");
+        let flt_idx = find("Low-Pass Filter");
+        let gain_idx = find("Gain");
+        let out_idx = find("Speaker Output");
 
         let make_node = |id: usize, tidx: usize, x: f32, y: f32, cat: &[NodeTemplate]| {
             let tmpl = &cat[tidx];
@@ -1130,8 +1145,15 @@ impl JodugaApp {
             return;
         }
 
-        let max_nodes = self.nodes.len() + 1;
-        let mut shadow = ShadowGraph::new(max_nodes as u32);
+        let output_id = match resolve_output_node_id(&self.nodes, &self.catalog) {
+            Ok(id) => id,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+
+        let mut shadow = ShadowGraph::new(output_id);
 
         for n in &self.nodes {
             let tmpl = &self.catalog[n.template_idx];
@@ -1172,13 +1194,6 @@ impl JodugaApp {
             }
         };
 
-        let output_id = self
-            .nodes
-            .iter()
-            .find(|n| matches!(self.catalog[n.template_idx].engine_type, NodeType::Output))
-            .map(|n| n.id as u32)
-            .unwrap_or(0);
-
         match AudioEngineWrapper::new(
             compiled_nodes,
             compiled_edges,
@@ -1204,11 +1219,11 @@ impl JodugaApp {
                     }
                     // Send mode/subtype initialization param
                     let mode_hash: Option<u32> = match tmpl.engine_type {
-                        NodeType::Oscillator => Some(0xAD), // WAVEFORM_TYPE
-                        NodeType::Filter => Some(0xBD),     // FILTER_MODE
-                        NodeType::Gain => Some(0xCF),       // GAIN_MODE
-                        NodeType::Delay => Some(0xCD),      // DELAY_MODE
-                        NodeType::Effects => Some(0xCE),    // EFFECTS_MODE
+                        NodeType::Oscillator => Some(joduga::param_hash::WAVEFORM_TYPE),
+                        NodeType::Filter => Some(joduga::param_hash::FILTER_MODE),
+                        NodeType::Gain => Some(joduga::param_hash::GAIN_MODE),
+                        NodeType::Delay => Some(joduga::param_hash::DELAY_MODE),
+                        NodeType::Effects => Some(joduga::param_hash::EFFECTS_MODE),
                         _ => None,
                     };
                     if let Some(hash) = mode_hash {
@@ -2014,4 +2029,100 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(JodugaApp::new()))
         }),
     )
+}
+
+/// Resolve which `GraphNode` represents the audio Output of the graph.
+///
+/// Returns the node's id (cast to `u32`, the type used throughout the
+/// engine FFI). Fails fast with a descriptive message if there is no
+/// Output node — the previous silent `unwrap_or(0)` fallback would route
+/// the engine to read whatever node happened to have id 0, which may
+/// not even exist after deletions.
+fn resolve_output_node_id(nodes: &[GraphNode], catalog: &[NodeTemplate]) -> Result<u32, String> {
+    let mut found: Option<u32> = None;
+    for n in nodes {
+        let tmpl = catalog.get(n.template_idx).ok_or_else(|| {
+            format!("Node {} references unknown template {}", n.id, n.template_idx)
+        })?;
+        if matches!(tmpl.engine_type, NodeType::Output) {
+            if found.is_some() {
+                return Err("Multiple Output nodes — keep only one".into());
+            }
+            found = Some(n.id as u32);
+        }
+    }
+    found.ok_or_else(|| "No Output node — add one to start the engine".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_node(id: usize, template_idx: usize) -> GraphNode {
+        GraphNode {
+            id,
+            template_idx,
+            param_values: vec![],
+            world_pos: egui::Pos2::ZERO,
+            input_port_screen: vec![],
+            output_port_screen: vec![],
+        }
+    }
+
+    fn make_template(engine_type: NodeType) -> NodeTemplate {
+        NodeTemplate {
+            name: "test",
+            category: "test",
+            icon: "?",
+            color: egui::Color32::WHITE,
+            num_inputs: 0,
+            num_outputs: 0,
+            engine_type,
+            subtype: 0,
+            params: vec![],
+        }
+    }
+
+    #[test]
+    fn resolve_output_picks_unique_output_node() {
+        let cat = vec![make_template(NodeType::Oscillator), make_template(NodeType::Output)];
+        let nodes = vec![make_node(0, 0), make_node(7, 1)];
+        assert_eq!(resolve_output_node_id(&nodes, &cat).unwrap(), 7);
+    }
+
+    #[test]
+    fn resolve_output_errors_when_missing() {
+        let cat = vec![make_template(NodeType::Oscillator)];
+        let nodes = vec![make_node(0, 0)];
+        assert!(resolve_output_node_id(&nodes, &cat).unwrap_err().contains("No Output node"));
+    }
+
+    #[test]
+    fn resolve_output_errors_on_duplicate_outputs() {
+        let cat = vec![make_template(NodeType::Output)];
+        let nodes = vec![make_node(0, 0), make_node(1, 0)];
+        assert!(resolve_output_node_id(&nodes, &cat).unwrap_err().contains("Multiple Output"));
+    }
+
+    #[test]
+    fn resolve_output_errors_on_bad_template_idx() {
+        let cat = vec![make_template(NodeType::Output)];
+        let nodes = vec![make_node(0, 99)];
+        assert!(resolve_output_node_id(&nodes, &cat).unwrap_err().contains("unknown template"));
+    }
+
+    /// JodugaApp::new() panics with a descriptive message if the default
+    /// demo-graph templates have been renamed or removed. Pin the names
+    /// here so a catalog refactor surfaces as a unit-test failure instead
+    /// of a startup panic in front of the user.
+    #[test]
+    fn default_graph_templates_exist_in_catalog() {
+        let cat = catalog();
+        for name in ["Sine Oscillator", "Low-Pass Filter", "Gain", "Speaker Output"] {
+            assert!(
+                cat.iter().any(|t| t.name == name),
+                "default-graph template '{name}' missing from catalog"
+            );
+        }
+    }
 }

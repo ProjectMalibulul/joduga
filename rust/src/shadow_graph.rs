@@ -86,22 +86,100 @@ impl ShadowGraph {
             ));
         }
 
+        // Reject exact duplicate edges. The C++ engine sums every connection
+        // landing on a given input slot, so accepting the same edge twice
+        // doubles that source's contribution silently. UI-side dedupe is not
+        // guaranteed (drag-reconnect, JSON imports, etc.).
+        if self.edges.iter().any(|e| {
+            e.from_node_id == edge.from_node_id
+                && e.from_output_idx == edge.from_output_idx
+                && e.to_node_id == edge.to_node_id
+                && e.to_input_idx == edge.to_input_idx
+        }) {
+            return Err(format!(
+                "Duplicate edge from {}:{} to {}:{}",
+                edge.from_node_id, edge.from_output_idx, edge.to_node_id, edge.to_input_idx
+            ));
+        }
+
         self.edges.push(edge);
         Ok(())
     }
 
-    /// Remove an edge between two nodes.
-    pub fn remove_edge(&mut self, from_node_id: u32, to_node_id: u32) -> Result<(), String> {
+    /// Remove a specific edge between two nodes and ports.
+    pub fn remove_edge(
+        &mut self,
+        from_node_id: u32,
+        from_output_idx: u32,
+        to_node_id: u32,
+        to_input_idx: u32,
+    ) -> Result<(), String> {
         let before = self.edges.len();
-        self.edges.retain(|e| !(e.from_node_id == from_node_id && e.to_node_id == to_node_id));
+        self.edges.retain(|e| {
+            !(e.from_node_id == from_node_id
+                && e.from_output_idx == from_output_idx
+                && e.to_node_id == to_node_id
+                && e.to_input_idx == to_input_idx)
+        });
         if self.edges.len() == before {
-            return Err(format!("No edge from {} to {}", from_node_id, to_node_id));
+            return Err(format!(
+                "No edge from {}:{} to {}:{}",
+                from_node_id, from_output_idx, to_node_id, to_input_idx
+            ));
         }
         Ok(())
     }
 
-    /// Validate acyclicity using DFS with proper HashMap-based colouring.
+    /// Validate the graph: output node existence and acyclicity.
     pub fn validate(&self) -> Result<(), String> {
+        // The C++ engine resolves output_node_id at init; if the id is not in
+        // the node map it sets output_feeder_slot = -1 and silently emits
+        // silence. Catch that here so the user gets an explicit error
+        // instead of a working "Play" button feeding nothing into the ring.
+        if !self.nodes.contains_key(&self.output_node_id) {
+            return Err(format!("Output node {} is not present in the graph", self.output_node_id));
+        }
+
+        // The id must also refer to an Output-type node. Otherwise the
+        // C++ engine takes the wrong node's first output as the audio
+        // sink: e.g. an Oscillator's raw waveform gets routed straight
+        // to the speakers, bypassing every effect downstream.
+        let out_node = &self.nodes[&self.output_node_id];
+        if out_node.node_type != NodeType::Output {
+            return Err(format!(
+                "Node {} is configured as the audio output but has type {:?}, not Output",
+                self.output_node_id, out_node.node_type
+            ));
+        }
+
+        // ShadowGraph::{nodes, edges} are pub, so a caller can splice an
+        // edge directly into `edges` bypassing add_edge's endpoint check.
+        // Validate edge endpoints here so the cycle DFS below can rely on
+        // the invariant that every adjacency neighbour is a known node.
+        for e in &self.edges {
+            if !self.nodes.contains_key(&e.from_node_id) {
+                return Err(format!("Edge references missing source node {}", e.from_node_id));
+            }
+            if !self.nodes.contains_key(&e.to_node_id) {
+                return Err(format!("Edge references missing target node {}", e.to_node_id));
+            }
+        }
+
+        // The audio output node must have at least one incoming edge.
+        // Without this the C++ engine's `output_feeder_buffer` falls
+        // back to its sentinel and the ring-write block in
+        // audio_engine.cpp is skipped — the engine starts, claims to
+        // be running, and produces silence with no diagnostic. Catch
+        // it here so the user gets a clear error at start time rather
+        // than debugging a silent engine.
+        let output_has_input = self.edges.iter().any(|e| e.to_node_id == self.output_node_id);
+        if !output_has_input {
+            return Err(format!(
+                "Output node {} has no incoming edges — connect at least one source",
+                self.output_node_id
+            ));
+        }
+
         // white = unvisited, grey = in recursion stack, black = done
         let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
 
@@ -127,7 +205,13 @@ impl ShadowGraph {
         color.insert(node, 1); // grey
         if let Some(neighbours) = adj.get(&node) {
             for &next in neighbours {
-                match color.get(&next).copied().unwrap_or(0) {
+                // Invariant: validate() guarantees every edge endpoint is a
+                // known node, so `next` is always present in `color`.
+                let c = *color.get(&next).expect(
+                    "ShadowGraph invariant broken: dfs_cycle reached a node \
+                     not in the color map (validate() should have caught this)",
+                );
+                match c {
                     1 => return Err("Graph contains a cycle".into()),
                     0 => Self::dfs_cycle(next, adj, color)?,
                     _ => {} // black — already finished
@@ -277,7 +361,7 @@ mod tests {
         g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
             .unwrap();
         assert_eq!(g.edges.len(), 1);
-        g.remove_edge(0, 1).unwrap();
+        g.remove_edge(0, 0, 1, 0).unwrap();
         assert!(g.edges.is_empty());
     }
 
@@ -286,5 +370,108 @@ mod tests {
         let mut g = ShadowGraph::new(0);
         g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
         assert!(g.add_node(make_node(0, NodeType::Filter, 1, 1)).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_missing_output_node() {
+        // output_node_id = 99 but no such node exists.
+        let mut g = ShadowGraph::new(99);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g.validate().expect_err("missing output must fail");
+        assert!(err.contains("Output node 99"), "unexpected error: {err}");
+    }
+
+    /// Edges spliced in directly (bypassing add_edge) that reference
+    /// nodes which aren't in `nodes` must be rejected. Otherwise the
+    /// cycle DFS would silently treat them as separate, and the C++
+    /// engine would later be handed a connection list it cannot resolve.
+    #[test]
+    fn validate_rejects_edge_with_unknown_source_node() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        // Splice past add_edge's validation:
+        g.edges.push(Edge { from_node_id: 99, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 });
+        let err = g.validate().expect_err("unknown source must fail");
+        assert!(err.contains("missing source node 99"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_edge_with_unknown_target_node() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        g.edges.push(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 77, to_input_idx: 0 });
+        let err = g.validate().expect_err("unknown target must fail");
+        assert!(err.contains("missing target node 77"), "unexpected error: {err}");
+    }
+
+    /// validate() must reject a graph whose `output_node_id` points to a
+    /// node of any type other than NodeType::Output. Otherwise the C++
+    /// engine takes whatever's at slot 0 of that node as the audio sink,
+    /// effectively routing e.g. the oscillator's raw waveform straight
+    /// past every downstream effect.
+    #[test]
+    fn validate_rejects_non_output_typed_sink() {
+        let mut g = ShadowGraph::new(0); // claims node 0 is the output
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        let err = g.validate().expect_err("non-Output sink must fail");
+        assert!(err.contains("not Output"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_graph() {
+        // No nodes at all → output cannot exist.
+        let g = ShadowGraph::new(0);
+        assert!(g.validate().is_err());
+    }
+
+    #[test]
+    fn compile_rejects_missing_output_node() {
+        // compile() goes through validate(); the bad config must not reach the FFI.
+        let mut g = ShadowGraph::new(42);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        assert!(g.compile().is_err());
+    }
+
+    #[test]
+    fn duplicate_edge_rejected() {
+        // Two identical edges would be silently summed by the C++ engine,
+        // doubling the source's contribution to the input slot.
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let e = Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 };
+        g.add_edge(e.clone()).unwrap();
+        let err = g.add_edge(e).expect_err("duplicate must fail");
+        assert!(err.contains("Duplicate edge"), "unexpected error: {err}");
+        assert_eq!(g.edges.len(), 1);
+    }
+
+    #[test]
+    fn parallel_edges_to_distinct_ports_are_allowed() {
+        // Same source connecting to *different* input ports is legitimate
+        // (e.g. routing one oscillator to L and R of a stereo node) and must
+        // not be flagged as a duplicate.
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Gain, 2, 1)).unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+            .unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 1 })
+            .unwrap();
+        assert_eq!(g.edges.len(), 2);
+    }
+
+    #[test]
+    fn validate_rejects_disconnected_output() {
+        // Output node typed correctly but no edge feeds into it. The
+        // C++ engine would silently produce silence — catch at validate.
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g.validate().expect_err("must fail with no edge to output");
+        assert!(err.contains("no incoming edges"), "unexpected error: {err}");
     }
 }

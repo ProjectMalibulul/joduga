@@ -76,13 +76,26 @@ public:
 
     void set_param(uint32_t param_hash, float value) override
     {
+        if (!std::isfinite(value))
+            return;
         if (param_hash == ParamHash::OSC_FREQUENCY || param_hash == ParamHash::FREQ)
         {
             target_frequency = std::fmax(0.01f, std::fmin(value, 20000.0f));
         }
         else if (param_hash == ParamHash::WAVEFORM_TYPE)
         {
-            waveform = static_cast<int>(value);
+            // Guard against `static_cast<int>(NaN)` UB (handled by
+            // the early-return) and clamp to the declared enum
+            // range. The process() switch has a `default: SINE`
+            // fall-through so out-of-range was not silently
+            // bypassing processing, but the cast itself is UB on
+            // non-finite values which the early-return now blocks.
+            int w = static_cast<int>(value);
+            if (w < 0)
+                w = 0;
+            else if (w > ADDITIVE)
+                w = ADDITIVE;
+            waveform = w;
         }
         else if (param_hash == ParamHash::DUTY_CYCLE)
         {
@@ -90,23 +103,36 @@ public:
         }
         else if (param_hash == ParamHash::FM_MOD_DEPTH)
         {
-            mod_depth = value;
+            // Phase-modulation depth in radians; large values run into
+            // aliasing but won't blow up the mod_phase accumulator.
+            mod_depth = std::fmax(0.0f, std::fmin(value, 100.0f));
         }
         else if (param_hash == ParamHash::FM_MOD_FREQ)
         {
-            mod_freq = value;
+            // Clamp into the audible range. An unclamped huge value
+            // would make `mod_phase += TWO_PI * mod_freq * dt` exceed
+            // TWO_PI per sample, defeating the single-step wrap below
+            // and letting mod_phase grow without bound — sin() on huge
+            // floats then loses precision and the output decays to
+            // shaped garbage.
+            mod_freq = std::fmax(0.0f, std::fmin(value, 20000.0f));
         }
         else if (param_hash == ParamHash::AM_MOD_DEPTH)
         {
-            mod_depth = value;
+            mod_depth = std::fmax(0.0f, std::fmin(value, 100.0f));
         }
         else if (param_hash == ParamHash::AM_MOD_FREQ)
         {
-            mod_freq = value;
+            mod_freq = std::fmax(0.0f, std::fmin(value, 20000.0f));
         }
         else if (param_hash == ParamHash::DETUNE)
         {
-            detune = value;
+            // Detune is a 0-1 ratio scaled internally by 0.01 per voice.
+            // An unclamped large value combined with high `voices` and a
+            // 20 kHz carrier could push `saw_phases[j] += TWO_PI * f *
+            // (1 + detune_amt) * dt` past TWO_PI per sample, defeating
+            // the single-step wrap below.
+            detune = std::fmax(0.0f, std::fmin(value, 1.0f));
         }
         else if (param_hash == 0xAAu)
         { // voices
@@ -118,7 +144,14 @@ public:
         }
         else if (param_hash == 0xACu)
         { // rolloff
-            rolloff = value;
+            // Was completely unclamped. `rolloff = -1.0` causes
+            // divide-by-zero in the additive synth path
+            // (`amp /= (1.0f + rolloff)`); rolloff < -1 produces
+            // a sign-flipping Inf-pump as `amp` is repeatedly
+            // divided by a negative number with magnitude < 1.
+            // Standard rolloff curves are positive in [0, ~4];
+            // clamp generously.
+            rolloff = std::fmax(0.0f, std::fmin(value, 8.0f));
         }
     }
 
@@ -196,7 +229,7 @@ public:
                 float mod = mod_depth * std::sin(mod_phase);
                 sample = std::sin(phase + mod);
                 mod_phase += TWO_PI * mod_freq * sample_rate_inv;
-                if (mod_phase > TWO_PI)
+                while (mod_phase > TWO_PI)
                     mod_phase -= TWO_PI;
                 break;
             }
@@ -207,7 +240,7 @@ public:
                 float mod = 1.0f + mod_depth * std::sin(mod_phase);
                 sample = carrier * mod * 0.5f;
                 mod_phase += TWO_PI * mod_freq * sample_rate_inv;
-                if (mod_phase > TWO_PI)
+                while (mod_phase > TWO_PI)
                     mod_phase -= TWO_PI;
                 break;
             }
@@ -228,7 +261,7 @@ public:
                     float p = saw_phases[j];
                     sample += 2.0f * (p / TWO_PI) - 1.0f;
                     saw_phases[j] += TWO_PI * frequency * (1.0f + detune_amt) * sample_rate_inv;
-                    if (saw_phases[j] > TWO_PI)
+                    while (saw_phases[j] > TWO_PI)
                         saw_phases[j] -= TWO_PI;
                 }
                 sample /= (float)v;

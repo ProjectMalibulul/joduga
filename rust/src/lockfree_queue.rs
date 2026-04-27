@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 // ── Shared command types (repr(C), 16 bytes each) ──────────────────────
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct ParamUpdateCmd {
     pub node_id: u32,
@@ -26,7 +26,7 @@ pub struct ParamUpdateCmd {
     pub padding: u32,
 }
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct MIDIEventCmd {
     pub event_type: u32,
@@ -36,13 +36,15 @@ pub struct MIDIEventCmd {
 }
 
 /// Shared status register between Rust and C++.
-/// All fields are atomic to prevent data races across threads.
+/// Plain integers are used to preserve ABI layout with C++.
+/// Access atomically via AtomicU32::from_ptr on the accessor side.
 #[repr(C)]
 #[derive(Debug)]
 pub struct StatusRegister {
-    pub graph_version: std::sync::atomic::AtomicU32,
-    pub adopted_version: std::sync::atomic::AtomicU32,
-    pub reserved: [u32; 2],
+    pub graph_version: u32,
+    pub adopted_version: u32,
+    pub cpu_load_permil: u32,
+    pub reserved: u32,
 }
 
 // ── Ring buffer ────────────────────────────────────────────────────────
@@ -199,5 +201,62 @@ mod tests {
         let mut out = [0u32; 1];
         q.dequeue(&mut out);
         assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn cmd_structs_match_cpp_alignas_contract() {
+        // C++ side declares both with alignas(16); Rust must match or the FFI
+        // ABI is silently violated. Sizes stay 16 because both structs are
+        // already 4 × u32 with no trailing padding.
+        assert_eq!(std::mem::align_of::<ParamUpdateCmd>(), 16);
+        assert_eq!(std::mem::align_of::<MIDIEventCmd>(), 16);
+        assert_eq!(std::mem::size_of::<ParamUpdateCmd>(), 16);
+        assert_eq!(std::mem::size_of::<MIDIEventCmd>(), 16);
+
+        // Vec<T> allocates at align_of::<T>(), so the queue's backing
+        // storage must now be 16-byte aligned at its base.
+        let pq = LockFreeRingBuffer::<ParamUpdateCmd>::new(8);
+        let mq = LockFreeRingBuffer::<MIDIEventCmd>::new(8);
+        assert_eq!(pq.as_ptr() as usize % 16, 0);
+        assert_eq!(mq.as_ptr() as usize % 16, 0);
+    }
+
+    /// Pin field layout to cpp/include/audio_engine.h:71-78. A reorder
+    /// would silently route param updates to the wrong dispatch field
+    /// (e.g. param_hash arriving in the slot that the C++ side reads as
+    /// node_id).
+    #[test]
+    fn param_update_cmd_field_offsets_match_cpp() {
+        use std::mem::offset_of;
+        assert_eq!(offset_of!(ParamUpdateCmd, node_id), 0);
+        assert_eq!(offset_of!(ParamUpdateCmd, param_hash), 4);
+        assert_eq!(offset_of!(ParamUpdateCmd, value), 8);
+        assert_eq!(offset_of!(ParamUpdateCmd, padding), 12);
+    }
+
+    /// MIDIEventCmd has no public C++ counterpart in audio_engine.h yet
+    /// but is read by the audio thread off the same queue layout.
+    /// Pinning offsets prevents silent drift when one is added.
+    #[test]
+    fn midi_event_cmd_field_offsets() {
+        use std::mem::offset_of;
+        assert_eq!(offset_of!(MIDIEventCmd, event_type), 0);
+        assert_eq!(offset_of!(MIDIEventCmd, pitch), 4);
+        assert_eq!(offset_of!(MIDIEventCmd, velocity), 8);
+        assert_eq!(offset_of!(MIDIEventCmd, timestamp_samples), 12);
+    }
+
+    /// Pin StatusRegister layout to cpp/include/audio_engine.h:83-89.
+    /// Cross-language atomic_ref / AtomicU32::from_ptr access on
+    /// cpu_load_permil depends on its offset being exactly 8.
+    #[test]
+    fn status_register_field_offsets_match_cpp() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(size_of::<StatusRegister>(), 16);
+        assert_eq!(align_of::<StatusRegister>(), 4);
+        assert_eq!(offset_of!(StatusRegister, graph_version), 0);
+        assert_eq!(offset_of!(StatusRegister, adopted_version), 4);
+        assert_eq!(offset_of!(StatusRegister, cpu_load_permil), 8);
+        assert_eq!(offset_of!(StatusRegister, reserved), 12);
     }
 }
