@@ -1,34 +1,36 @@
-# Next loop seed (loop 31)
+# Next loop seed (loop 32)
 
 ## Primary target
-`cpp/include/nodes/effects.h` `process_overdrive` (around lines
-209-230) — the wet path uses raw `tone_lp` instead of the
-tone-blended `tone_lp*tone + distorted*(1-tone)` that distortion
-uses. At tone=0 the overdrive wet path silences entirely because
-`tone_lp += 0*(distorted - tone_lp)` never updates and `tone_lp`
-stays at its initial value.
+Re-OBSERVE `cpp/src/audio_engine.cpp` for any remaining
+RT-discipline holes:
+- allocations on the audio thread (vector reserve, push_back,
+  string ops, std::function captures)
+- syscalls (any iostream, fprintf, mutex lock, sleep)
+- the per-node param-update apply path: does
+  `apply_pending_params` allocate or take locks?
 
-Fix should mirror process_distortion:
-```cpp
-float shaped = tone_lp * tone + distorted * (1.0f - tone);
-out[i] = in[i] * (1.0f - distort_mix) + shaped * distort_mix;
-```
+## Secondary target
+`cpp/include/nodes/oscillator.h` `process()` — even after loop 23
+clamp the AM/FM modulation scratch path could produce non-finite
+intermediates if `phase_inc * sample_rate` integer-overflows at
+extreme frequency settings, or if the multiplicative AM stage
+applies an NaN modulator for one sample before the loop-26-style
+scrub catches up. Add per-sample output isfinite check on osc
+output.
 
-## Secondary target  
-`cpp/include/nodes/effects.h` `process_widener` — uses `ap_buf`
-and `ap_pos` for what is actually a 512-sample delay line, not an
-allpass. The mix `out = in*(1-w) + delayed*w` is a comb filter
-(periodic notches at multiples of sample_rate/512 ≈ 93.75 Hz),
-not a decorrelator. Either:
-  (a) rename to `delay_buf`/`delay_pos` to be honest, or
-  (b) implement an actual 1st-order allpass for true decorrelation
-      (cheap: same DF-II pattern from delay.h phaser fix in loop 28).
+## Tertiary target (priority-4 cleanup)
+`cpp/include/nodes/effects.h` `process_overdrive` tone-blend bug
+(deferred from loops 29 & 30): wet path uses raw `tone_lp`
+instead of the tone-blended `tone_lp*tone + distorted*(1-tone)`.
+At tone=0 the wet path silences entirely.
 
-(b) is a real fix (improves stereo widening); (a) is just naming
-hygiene. Prefer (b) if loop 31 has budget.
-
-## After loop 31
-Loop 32: locate output node / soft-clipper code path. It's not in
-`cpp/include/nodes/output.h` (file doesn't exist) — likely lives
-in `audio_engine.cpp` or the `audio_engine_wrapper.rs` Rust side.
-Audit for DC blocker / final clipper NaN handling.
+## Pattern check
+After loop 32 we will have hardened all 6 node types + the engine
+ring boundary. The remaining surface area is:
+  - the Rust→C++ FFI boundary (validate ParamUpdateCmd before
+    enqueue?)
+  - the cpal callback in `audio_engine_wrapper.rs` (does it scrub
+    again before writing to the cpal buffer? Probably redundant
+    after loop 31 but worth checking)
+  - the MIDI input path (`midi_input.rs`) — note-on velocity
+    could be 0 unexpectedly, or out-of-range note numbers

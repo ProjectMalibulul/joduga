@@ -210,7 +210,26 @@ static void audio_thread_main(AudioEngineImpl *e)
 
             const float *src = e->scratch_buffers[e->output_feeder_buffer].data();
             for (uint32_t i = 0; i < to_write; ++i)
-                e->output_ring_buffer[(oh + i) & (cap - 1)] = src[i];
+            {
+                // Final defense before the audio device. The graph
+                // is hardened layer-by-layer (oscillator/filter/
+                // delay/reverb/effects/gain all NaN-scrub their
+                // own state and outputs in loops 23-30) but a
+                // single non-finite sample reaching the DAC can
+                // cause driver-level clicks or in extreme cases
+                // a sound-server fault. We hard-clamp to ±1.0 at
+                // the boundary, which is what the device would do
+                // anyway (often as audible hard distortion). NaN
+                // is mapped to silence, not a clamp endpoint.
+                float s = src[i];
+                if (!std::isfinite(s))
+                    s = 0.0f;
+                else if (s > 1.0f)
+                    s = 1.0f;
+                else if (s < -1.0f)
+                    s = -1.0f;
+                e->output_ring_buffer[(oh + i) & (cap - 1)] = s;
+            }
 
             e->output_ring_head->store((oh + to_write) & (cap - 1),
                                        std::memory_order_release);

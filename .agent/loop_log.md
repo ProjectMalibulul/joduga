@@ -1202,3 +1202,75 @@ re-deferred from loop 29 by loop 30's priority-1 win). Plus
 `process_widener` is misnamed (uses `ap_buf` for a comb-filter
 delay line, not an actual all-pass) — rename or rewrite to a
 real allpass.
+
+## Loop 31 — Final-stage NaN scrub + ±1.0 hard clamp on audio-engine ring write
+
+**OBSERVE.** Re-OBSERVE turned up a higher-priority defect than the
+loop-30 next.md plan (overdrive tone-blend, priority 4). At
+`cpp/src/audio_engine.cpp:212-213` the per-block output-ring write
+loop did a raw `e->output_ring_buffer[(oh + i) & (cap - 1)] =
+src[i]` — no NaN/Inf scrub, no clamp. This is the LAST stage
+before samples cross into Rust and then into the cpal DAC
+callback. Every per-node scrub added in loops 23-30 protects
+against in-graph corruption, but a single regression in any node
+(or a future-added node that forgets the scrub) would leak
+non-finite samples directly to the audio device. Best case is a
+click; worst case is a driver fault or sound-server hang.
+
+Also confirmed there is NO standalone OutputNode class —
+`NODE_TYPE_OUTPUT` aliases to GainNode in `create_node()`
+(audio_engine.cpp:97-99). The "output" is the ring write itself.
+
+**ORIENT.** Priority-1: silent corruption / data corruption at
+the device boundary. The cost of the fix is one isfinite + two
+compare-and-clamp per sample (≈ 256 × ~3 cycles / block ≈ 800
+cycles, negligible against the rest of the graph). This is
+precisely the "things that crash or corrupt silently" priority-1
+slot, applied at the place where it matters most.
+
+**DECIDE.** Hard clamp the ring output to ±1.0 with NaN/Inf →
+0.0. Hard rather than soft (tanh) because:
+  (a) hard clamp is exactly what the DAC does anyway,
+  (b) tanh costs ~30× more CPU,
+  (c) graph-level nodes are already amplitude-bounded near unity;
+      a clamp event indicates upstream regression, not normal
+      signal levels.
+
+**DEVIL.**
+- *Correctness*: ±1.0 maps to the DAC's full-scale range (cpal's
+  f32 output expects [-1, 1]). A graph that wants > 0 dBFS is
+  already misconfigured. The clamp is correct.
+- *Scope*: I considered also adding a soft-knee compressor at the
+  boundary, but that's a feature (a "master limiter"), not a
+  defense. The defense is the clamp; the limiter would be a
+  separate node-type RFE.
+- *Priority*: This is the audio-output equivalent of the parser
+  layer in a network protocol — last validation before
+  untrusted data hits OS-level code. Definitely priority 1.
+- *Regression*: Existing test bounds are `≤ 4.0` (gain), `≤ 1.0`
+  for OscNode-only tests. Verified via grep that only one
+  `max_abs >` floor assertion exists (phaser, threshold 0.05) and
+  it sits comfortably inside ±1.0. New test
+  `engine_final_stage_clamps_output_to_unity` would have failed
+  on the old behavior (max_abs would have been ~10.0 after
+  smoothing).
+
+**ACT.**
+- audio_engine.cpp ring write: replace single-line copy with
+  isfinite-check + ±1.0 clamp + commented rationale.
+- engine_smoke.rs new test forces 10× simple gain on a 440 Hz
+  oscillator and asserts every ring sample is finite, ≤ 1.0+ε,
+  and that gain saturation actually triggered (max_abs > 0.95).
+
+**VERIFY.** cmake clean. cargo test 18/18 (was 17). fmt + clippy
+--release --all-targets -- -D warnings clean.
+
+**NEXT.** Loop 32: re-prioritize from `next.md`. Highest-leverage
+remaining priority-1 candidates:
+  (a) OscillatorNode `process()` writes to scratch with no per-
+      sample isfinite check — extreme FM/AM intermodulation could
+      still produce inf/nan that the loop-23 wrap-fix doesn't
+      catch (e.g. AMP × tanh(NaN_input)).
+  (b) Look at `audio_engine.cpp` for other RT-discipline holes
+      (allocations, mutexes, syscall paths).
+  (c) Then drop to priority-4: overdrive tone-blend bug.

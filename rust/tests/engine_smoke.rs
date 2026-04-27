@@ -997,3 +997,60 @@ fn gain_node_all_modes_stay_bounded_under_param_storm() {
 
     eng.stop().expect("stop");
 }
+
+/// Loop 31 regression: the audio-engine ring write copied scratch
+/// samples straight to the output ring with no NaN/Inf scrub and
+/// no final-stage clamp. Even though every node in the graph now
+/// scrubs its own state (loops 23-30), a single regression in any
+/// node could send non-finite or out-of-range samples directly to
+/// the DAC. The new last-defense clamp at audio_engine.cpp's ring
+/// write hard-bounds the device input to ±1.0 (mapping NaN/Inf to
+/// silence). This test forces a 10× gain after a unit-amplitude
+/// oscillator and asserts the ring output is bounded ≤1.0.
+#[test]
+fn engine_final_stage_clamps_output_to_unity() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Gain, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+
+    // GAIN_LEVEL clamp upstream is [0, 10]; force the maximum so
+    // scratch output reaches roughly ±10. The final-stage clamp
+    // must hard-bound the ring delivery at ±1.
+    eng.set_param(1, param_hash::GAIN_MODE, 0.0).expect("simple gain");
+    eng.set_param(1, param_hash::GAIN_LEVEL, 10.0).expect("max gain");
+
+    eng.start().expect("start");
+    thread::sleep(Duration::from_millis(200));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 16384];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "no samples reached ring");
+
+    let mut max_abs = 0.0_f32;
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} non-finite ({s}) — final-stage scrub failed");
+        assert!(s.abs() <= 1.0 + 1e-6, "sample {i} = {s} exceeded ±1.0 final-stage clamp");
+        max_abs = max_abs.max(s.abs());
+    }
+    // After smoothing, gain ramps from 1.0 toward 10.0 over many
+    // blocks; we should reach saturation comfortably within 200 ms.
+    assert!(max_abs > 0.95, "10x gain never saturated the clamp: max={max_abs}");
+
+    eng.stop().expect("stop");
+}
