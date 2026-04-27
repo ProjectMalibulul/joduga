@@ -763,3 +763,38 @@ errors, and confirms double-stop is safe.
 
 **Verify:** cmake build clean. 38 lib + 5 ui_main + 7 smoke = 50
 joduga tests pass. fmt + clippy clean.
+
+## Loop 22 — Audio thread liveness watchdog via graph_version
+
+**Observe:** status_register.graph_version is incremented by the C++
+audio thread every block (cpp:222) but the Rust wrapper exposed no
+accessor. If the audio thread hung — deadlock, panic in a node —
+nothing in the host could detect it. The output ring would drain to
+silence and the UI would keep painting like nothing was wrong.
+
+**Decide:** Add `graph_version()` and `is_audio_thread_alive(timeout)`
+to AudioEngineWrapper. The latter samples the counter, sleeps, and
+returns whether it advanced — a primitive any host can poll. Add a
+smoke test that exercises both directions of the boolean (advancing
+while running, frozen after stop).
+
+**Devil's advocate:**
+- Correctness: graph_version is fetch_add'd atomically on the C++ side
+  via std::atomic_ref; Rust reads it via AtomicU32::from_ptr with
+  Acquire ordering. No tear, no UB.
+- Scope: a watchdog primitive, not a watchdog policy. The current
+  task scope is to make the condition observable; making the host
+  *react* (alarm, restart, etc.) is host-level work and out of scope
+  for the engine wrapper.
+- Priority: priority-2 (missing error handling on a critical path —
+  audio thread liveness was unmonitored). The cost of the helper is
+  zero on the audio path; only the host pays the sleep cost.
+
+**Act:**
+- rust/src/audio_engine_wrapper.rs: graph_version() +
+  is_audio_thread_alive() helpers.
+- rust/tests/engine_smoke.rs: audio_thread_liveness_via_graph_version
+  smoke test.
+
+**Verify:** 38 lib + 5 ui_main + 8 smoke = 51 joduga tests. fmt +
+clippy clean.

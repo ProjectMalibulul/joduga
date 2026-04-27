@@ -222,6 +222,32 @@ impl AudioEngineWrapper {
                 .load(Ordering::Acquire)
         }
     }
+
+    /// Read the current graph_version counter that the C++ audio thread
+    /// increments every block (~187 Hz at 48 kHz / 256 frames). Used by
+    /// `is_audio_thread_alive` to detect a hung audio thread.
+    pub fn graph_version(&self) -> u32 {
+        unsafe {
+            AtomicU32::from_ptr(&self.status_register.graph_version as *const u32 as *mut u32)
+                .load(Ordering::Acquire)
+        }
+    }
+
+    /// Returns true if `graph_version` advances during `timeout`.
+    ///
+    /// A stuck audio thread (deadlock, infinite loop in a node) leaves
+    /// the counter frozen, the output ring drains to silence, and the
+    /// UI shows no diagnostic. This helper is the primitive the host
+    /// can poll to surface that condition.
+    ///
+    /// Caller must pick `timeout` ≥ a few block periods to avoid false
+    /// negatives on slow systems; 50 ms (≈9 blocks at 48 kHz/256) is
+    /// usually sufficient.
+    pub fn is_audio_thread_alive(&self, timeout: std::time::Duration) -> bool {
+        let before = self.graph_version();
+        std::thread::sleep(timeout);
+        self.graph_version() != before
+    }
 }
 
 impl Drop for AudioEngineWrapper {

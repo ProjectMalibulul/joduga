@@ -360,3 +360,35 @@ fn double_start_is_safe_and_reports_error() {
     // Second stop should be a successful no-op (idempotent).
     eng.stop().expect("idempotent stop");
 }
+
+/// graph_version must advance once the audio thread is running, and
+/// must stop advancing once stop() returns. is_audio_thread_alive is
+/// the primitive a host can use to detect a hung audio thread; this
+/// test exercises both directions of the boolean.
+#[test]
+fn audio_thread_liveness_via_graph_version() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+    let mut graph = ShadowGraph::new(1);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 1, 48_000, 256, 0).expect("init");
+    eng.start().expect("start");
+
+    assert!(
+        eng.is_audio_thread_alive(Duration::from_millis(50)),
+        "graph_version did not advance during 50 ms while running"
+    );
+
+    eng.stop().expect("stop");
+
+    // After stop, the counter must be frozen.
+    let frozen = eng.graph_version();
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(eng.graph_version(), frozen, "graph_version advanced after stop()");
+}
