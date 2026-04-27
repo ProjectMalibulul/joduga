@@ -72,3 +72,39 @@ also rejects.
 **Verify:** `cargo test -p joduga --lib` → 15 passed (12 prior + 3 new).
 `cargo fmt --check` clean. `cargo clippy --workspace --all-targets -- -D warnings`
 clean.
+
+## Loop 3 — ShadowGraph::add_edge rejects exact duplicate edges
+
+**Observe:** Loops 1-2 committed cleanly, 15/15 tests + lint green. Bootstrap
+issue #3: add_edge accepted identical (from_node, from_port, to_node,
+to_input) tuples; C++ engine sums all incoming connections, so a duplicate
+edge silently doubles the source's level on that input.
+
+**Decide:** Three candidates: (a) duplicate-edge rejection, (b) ui_main
+output_node_id off-by-one fix, (c) parse_engine_type strictness. Pick (a):
+priority-tier match with prior loops (silent-wrong-output bug), trivial
+scope, single file, well-isolated test surface. (b) requires UX decision
+about how the egui UI designates an output and is logged. (c) is the
+clear next step after this.
+
+**Devil's advocate:**
+- *Correctness*: Could legit graphs hit this? Same source → same
+  destination port is by definition duplicate; the legit case is same
+  source → *different* ports (mono-to-stereo fanout) which differs in
+  `to_input_idx`. Added `parallel_edges_to_distinct_ports_are_allowed`
+  test pinning that. Could it false-positive on (from, to) only? No —
+  the predicate compares all four fields.
+- *Scope*: Root cause is that C++ sums duplicates without knowing they
+  are duplicates. Fixing C++ to dedupe at engine-init would be more
+  defense-in-depth, but the canonical answer is: don't let invalid
+  edges cross the FFI in the first place. Same precedent as loop 2.
+- *Priority*: ui_main off-by-one is real but UX-blocked; this is a
+  clean correctness fix. Proceeding.
+
+**Act:** Added duplicate-tuple check at the end of `add_edge`'s validation
+in `rust/src/shadow_graph.rs`. Two new tests: `duplicate_edge_rejected`
+and `parallel_edges_to_distinct_ports_are_allowed`.
+
+**Verify:** `cargo test -p joduga --lib` → 17 passed (15 prior + 2 new).
+`cargo fmt --check` clean. `cargo clippy --workspace --all-targets -- -D warnings`
+clean.

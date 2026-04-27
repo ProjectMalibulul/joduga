@@ -86,6 +86,22 @@ impl ShadowGraph {
             ));
         }
 
+        // Reject exact duplicate edges. The C++ engine sums every connection
+        // landing on a given input slot, so accepting the same edge twice
+        // doubles that source's contribution silently. UI-side dedupe is not
+        // guaranteed (drag-reconnect, JSON imports, etc.).
+        if self.edges.iter().any(|e| {
+            e.from_node_id == edge.from_node_id
+                && e.from_output_idx == edge.from_output_idx
+                && e.to_node_id == edge.to_node_id
+                && e.to_input_idx == edge.to_input_idx
+        }) {
+            return Err(format!(
+                "Duplicate edge from {}:{} to {}:{}",
+                edge.from_node_id, edge.from_output_idx, edge.to_node_id, edge.to_input_idx
+            ));
+        }
+
         self.edges.push(edge);
         Ok(())
     }
@@ -333,5 +349,34 @@ mod tests {
         let mut g = ShadowGraph::new(42);
         g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
         assert!(g.compile().is_err());
+    }
+
+    #[test]
+    fn duplicate_edge_rejected() {
+        // Two identical edges would be silently summed by the C++ engine,
+        // doubling the source's contribution to the input slot.
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let e = Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 };
+        g.add_edge(e.clone()).unwrap();
+        let err = g.add_edge(e).expect_err("duplicate must fail");
+        assert!(err.contains("Duplicate edge"), "unexpected error: {err}");
+        assert_eq!(g.edges.len(), 1);
+    }
+
+    #[test]
+    fn parallel_edges_to_distinct_ports_are_allowed() {
+        // Same source connecting to *different* input ports is legitimate
+        // (e.g. routing one oscillator to L and R of a stereo node) and must
+        // not be flagged as a duplicate.
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Gain, 2, 1)).unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+            .unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 1 })
+            .unwrap();
+        assert_eq!(g.edges.len(), 2);
     }
 }
