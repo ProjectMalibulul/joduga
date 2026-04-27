@@ -931,3 +931,69 @@ fn effects_node_all_modes_stay_bounded_under_param_storm() {
 
     eng.stop().expect("stop");
 }
+
+/// Loop 30 regression: GainNode used `mode = static_cast<int>(value)`
+/// for GAIN_MODE without an isfinite guard (NaN→int UB), the
+/// compressor / gate envelope follower could pin `env_db` to ±Inf
+/// after a single Inf input (both branches do `coeff*env_db +
+/// (1-coeff)*input_db` so Inf state stays Inf forever), and the
+/// simple-gain smoothing loop didn't scrub the smoothed `gain`
+/// state. This pins finite, bounded output across all 5 modes
+/// after a NaN/Inf parameter storm.
+#[test]
+fn gain_node_all_modes_stay_bounded_under_param_storm() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Gain, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+
+    eng.set_param(1, param_hash::GAIN_LEVEL, 0.7).expect("level");
+    eng.set_param(1, param_hash::THRESHOLD, -20.0).expect("threshold");
+    eng.set_param(1, param_hash::RATIO, 4.0).expect("ratio");
+    eng.set_param(1, param_hash::ATTACK, 5.0).expect("attack");
+    eng.set_param(1, param_hash::RELEASE, 50.0).expect("release");
+
+    // Rogue values must be dropped by the isfinite early-return.
+    eng.set_param(1, param_hash::GAIN_MODE, f32::NAN).expect("NaN mode");
+    eng.set_param(1, param_hash::GAIN_MODE, 1.0e9).expect("huge mode");
+    eng.set_param(1, param_hash::GAIN_MODE, -1.0e9).expect("negative mode");
+    eng.set_param(1, param_hash::GAIN_LEVEL, f32::INFINITY).expect("Inf level");
+    eng.set_param(1, param_hash::THRESHOLD, f32::NAN).expect("NaN threshold");
+    eng.set_param(1, param_hash::ATTACK, f32::NEG_INFINITY).expect("NegInf attack");
+
+    eng.start().expect("start");
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let mode_names = ["SIMPLE_GAIN", "COMPRESSOR", "LIMITER", "GATE", "EXPANDER"];
+    for (m, name) in mode_names.iter().enumerate() {
+        eng.set_param(1, param_hash::GAIN_MODE, m as f32).expect("switch mode");
+        thread::sleep(Duration::from_millis(80));
+        let n = ring.read(&mut buf);
+        assert!(n > 0, "no samples for gain mode {name}");
+        let mut max_abs = 0.0_f32;
+        for (i, &s) in buf[..n].iter().enumerate() {
+            assert!(s.is_finite(), "gain mode {name} sample {i} non-finite ({s})");
+            max_abs = max_abs.max(s.abs());
+        }
+        // GAIN_LEVEL clamp is [0,10] and oscillator is unit amplitude;
+        // compressor/limiter only attenuate so the bound is generous.
+        assert!(max_abs <= 12.0, "gain mode {name} output exceeded sane bound: {max_abs}");
+    }
+
+    eng.stop().expect("stop");
+}

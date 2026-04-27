@@ -1,32 +1,34 @@
-# Next loop seed (loop 30)
+# Next loop seed (loop 31)
 
 ## Primary target
-`cpp/include/nodes/effects.h` `process_overdrive` — at tone=0 the
-wet path silences entirely because `tone_lp` is the IIR LP state
-that never updates when `tone == 0` (the `tone_lp += tone*(d -
-tone_lp)` step is multiplied by 0). Distortion handles this
-correctly: `shaped = tone_lp*tone + distorted*(1-tone)` so tone=0
-means "no LP filter, pass-through distorted". Overdrive should use
-the same blend.
+`cpp/include/nodes/effects.h` `process_overdrive` (around lines
+209-230) — the wet path uses raw `tone_lp` instead of the
+tone-blended `tone_lp*tone + distorted*(1-tone)` that distortion
+uses. At tone=0 the overdrive wet path silences entirely because
+`tone_lp += 0*(distorted - tone_lp)` never updates and `tone_lp`
+stays at its initial value.
 
+Fix should mirror process_distortion:
 ```cpp
-// current:
-out[i] = in[i] * (1.0f - distort_mix) + tone_lp * distort_mix;
-// should be:
 float shaped = tone_lp * tone + distorted * (1.0f - tone);
 out[i] = in[i] * (1.0f - distort_mix) + shaped * distort_mix;
 ```
 
-This is a priority-4 logic bug: the overdrive effect produces
-silence (or near-silence) for users who set tone=0, which is a
-reasonable "off the LP" setting.
+## Secondary target  
+`cpp/include/nodes/effects.h` `process_widener` — uses `ap_buf`
+and `ap_pos` for what is actually a 512-sample delay line, not an
+allpass. The mix `out = in*(1-w) + delayed*w` is a comb filter
+(periodic notches at multiples of sample_rate/512 ≈ 93.75 Hz),
+not a decorrelator. Either:
+  (a) rename to `delay_buf`/`delay_pos` to be honest, or
+  (b) implement an actual 1st-order allpass for true decorrelation
+      (cheap: same DF-II pattern from delay.h phaser fix in loop 28).
 
-## Backup target
-`cpp/include/nodes/gain.h` audit (218 lines, not yet reviewed) —
-expect set_param NaN guard + GAIN clamp + per-sample NaN scrub
-on the smoothed gain target if gain smoothing is implemented.
+(b) is a real fix (improves stereo widening); (a) is just naming
+hygiene. Prefer (b) if loop 31 has budget.
 
-## After loop 30
-Loop 31: gain.h audit. Loop 32: re-audit `output.h` (it's actually
-inside the audio_engine wrapper, not a standalone node header —
-need to locate the soft-clipper/DC-blocker code path).
+## After loop 31
+Loop 32: locate output node / soft-clipper code path. It's not in
+`cpp/include/nodes/output.h` (file doesn't exist) — likely lives
+in `audio_engine.cpp` or the `audio_engine_wrapper.rs` Rust side.
+Audit for DC blocker / final clipper NaN handling.

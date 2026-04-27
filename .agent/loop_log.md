@@ -1129,3 +1129,76 @@ uses raw tone_lp instead of `tone_lp*tone + distorted*(1-tone)`,
 silencing at tone=0). Plus possibly process_widener variable
 naming (`ap_buf`/`ap_pos` for a comb-filter delay line — misleading)
 or gain.h audit. Decide based on what re-OBSERVE shows.
+
+## Loop 30 — GainNode GAIN_MODE NaN UB + env_db Inf-pin + simple-gain scrub
+
+**OBSERVE.** `cpp/include/nodes/gain.h` 218 lines, 5 modes
+(SIMPLE_GAIN/COMPRESSOR/LIMITER/GATE/EXPANDER). Audit found:
+
+1. `GAIN_MODE: mode = static_cast<int>(value)` (line 57) — same
+   NaN UB as filter/delay/effects (loops 25/27/29).
+2. `process_compressor` and `process_gate` envelope follower:
+   `env_db = coeff * env_db + (1-coeff) * input_db`. If env_db
+   ever becomes ±Inf (e.g. an upstream chain hop produces Inf
+   before its own scrub kicks in next loop iteration), both attack
+   and release branches preserve Inf forever (`coeff*Inf +
+   (1-coeff)*finite = Inf`). Then `db_to_lin(-Inf) = 0` and
+   output is permanently silent. Defense-in-depth gap.
+3. Simple-gain smoothing: `gain = gain*0.99 + target_gain*0.01`
+   with no scrub. Although `target_gain` is NaN-safe via
+   fmin/fmax (which suppress NaN), `gain` could still go non-
+   finite under FP arithmetic edge cases — defense is cheap.
+
+Re-prioritized loop 30 from the previously-planned overdrive tone
+bug (priority 4) to gain.h hardening (priority 1) per the loop
+priority ordering.
+
+**ORIENT.** Same defense-in-depth pattern as loops 25-29. The
+env_db Inf-pin is theoretically gated behind upstream scrubs but
+the pattern is symmetric with the other IIR fixes.
+
+**DECIDE.** Bundle: isfinite param guard + GAIN_MODE clamp +
+env_db clamp+scrub in both compressor/gate branches + simple-gain
+state scrub + per-sample output scrub in all three process
+functions.
+
+**DEVIL.**
+- *Correctness*: env_db clamp `[-200, +200]` dB is generous (room
+  dB doesn't exceed ±150 in realistic signals); 200 dB > 0 dBFS
+  by 200 dB, so no compression curve will reach that bound from
+  legitimate audio.
+- *Scope*: I considered the deferred overdrive tone bug from loop
+  29 — but priority ordering puts gain.h's MODE NaN UB at priority 1
+  vs overdrive at priority 4. Take the priority-1 fix first.
+- *Priority*: GAIN_MODE NaN UB is unconditional UB; cost of the fix
+  is a single isfinite check and a clamp.
+- *Regression*: `gain` reset path (`if (!isfinite(gain)) gain =
+  target_gain`) — target_gain is itself NaN-safe so this can't
+  re-poison. Loop test with rogue ATTACK = -Inf verifies env_db
+  doesn't poison even when attack_coeff = exp(-1/(NegInf*sr*0.001))
+  = exp(0) = 1, which makes env_db never decay (still bounded).
+
+**ACT.**
+- gain.h `set_param`: isfinite early-return; clamp GAIN_MODE to
+  `[SIMPLE_GAIN, EXPANDER]`.
+- gain.h `process_compressor`/`process_gate`: clamp env_db to
+  [-200, +200] dB and scrub NaN explicitly after each IIR update;
+  scrub final `buf[i]*gain_lin` output for non-finite before
+  store-back.
+- gain.h simple-gain default arm: scrub `gain` IIR state (reset to
+  target_gain on poison) and scrub output sample.
+- engine_smoke.rs new test
+  `gain_node_all_modes_stay_bounded_under_param_storm`: Osc(440)→
+  Gain→Output, sends NaN/Inf to GAIN_MODE/GAIN_LEVEL/THRESHOLD/
+  ATTACK, then iterates all 5 modes and asserts every sample is
+  finite + ≤12.0 with the mode name in failure messages.
+
+**VERIFY.** cmake clean. cargo test 17/17 (was 16). fmt + clippy
+--release --all-targets -- -D warnings clean.
+
+**NEXT.** Loop 31: overdrive tone-blend logic bug in
+`cpp/include/nodes/effects.h` `process_overdrive` (priority 4 —
+re-deferred from loop 29 by loop 30's priority-1 win). Plus
+`process_widener` is misnamed (uses `ap_buf` for a comb-filter
+delay line, not an actual all-pass) — rename or rewrite to a
+real allpass.

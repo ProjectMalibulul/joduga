@@ -51,11 +51,24 @@ public:
 
     void set_param(uint32_t param_hash, float value) override
     {
+        if (!std::isfinite(value))
+            return;
         switch (param_hash)
         {
         case ParamHash::GAIN_MODE:
-            mode = static_cast<int>(value);
+        {
+            // Guard against `static_cast<int>(NaN)` UB (handled by
+            // the early-return) and clamp to the declared enum
+            // range so an out-of-range cast can't drive process()
+            // into the silent default arm with garbage state.
+            int m = static_cast<int>(value);
+            if (m < 0)
+                m = 0;
+            else if (m > EXPANDER)
+                m = EXPANDER;
+            mode = m;
             break;
+        }
         case ParamHash::GAIN_LEVEL: // = FREQ = 0x811C9DC5
             target_gain = std::fmax(0.0f, std::fmin(value, 10.0f));
             break;
@@ -133,7 +146,12 @@ public:
             for (uint32_t i = 0; i < num_samples; ++i)
             {
                 gain = gain * 0.99f + target_gain * 0.01f;
-                out[i] *= gain;
+                if (!std::isfinite(gain))
+                    gain = target_gain;
+                float y = out[i] * gain;
+                if (!std::isfinite(y))
+                    y = 0.0f;
+                out[i] = y;
             }
             break;
         }
@@ -168,6 +186,17 @@ private:
             else
                 env_db = release_coeff * env_db + (1.0f - release_coeff) * input_db;
 
+            // Defense in depth: an Inf or NaN reaching env_db (e.g.
+            // a chain hop temporarily producing Inf before its own
+            // scrub) would otherwise pin the IIR forever, since
+            // `coeff*Inf + (1-coeff)*Inf = Inf` for either branch.
+            // Bound to a generous dB range that still covers any
+            // realistic signal and clear NaN explicitly.
+            if (!std::isfinite(env_db) || env_db > 200.0f)
+                env_db = 200.0f;
+            else if (env_db < -200.0f)
+                env_db = -200.0f;
+
             // Gain computation with soft knee
             float overshoot = env_db - threshold_db;
             float gr = 0.0f;
@@ -183,7 +212,10 @@ private:
 
             gain_reduction_db = gr;
             float gain_lin = db_to_lin(-gain_reduction_db) * makeup_lin;
-            buf[i] *= gain_lin;
+            float y = buf[i] * gain_lin;
+            if (!std::isfinite(y))
+                y = 0.0f;
+            buf[i] = y;
         }
     }
 
@@ -203,6 +235,11 @@ private:
             else
                 env_db = release_coeff * env_db + (1.0f - release_coeff) * input_db;
 
+            if (!std::isfinite(env_db) || env_db > 200.0f)
+                env_db = 200.0f;
+            else if (env_db < -200.0f)
+                env_db = -200.0f;
+
             // Below threshold: attenuate
             float undershoot = threshold_db - env_db;
             float gr = 0.0f;
@@ -212,7 +249,10 @@ private:
             }
 
             float gain_lin = db_to_lin(-gr);
-            buf[i] *= gain_lin;
+            float y = buf[i] * gain_lin;
+            if (!std::isfinite(y))
+                y = 0.0f;
+            buf[i] = y;
         }
     }
 };
