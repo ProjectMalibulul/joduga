@@ -1307,3 +1307,17 @@ remaining priority-1 candidates:
   - *Priority*: midi_input bounds and graph cycle edge cases also exist, but those have different blast radius. This is the highest-leverage error-handling gap on the load-patch flow.
 **ACT**: replaced both `let _ = engine.set_param(...)` lines with `engine.set_param(...).map_err(|e| format!(...))?` carrying node id and param hash for diagnosability.
 **Result**: full workspace builds clean. 20/20 engine_smoke tests pass. shadow_graph + lockfree_queue tests pass. clippy clean.
+
+## Loop 35 — Audio thread SPSC memory ordering
+**OBSERVE**: cpp/src/audio_engine.cpp had two `memory_order_acquire` loads on consumer-/producer-OWN indices:
+  - line 153 `param_queue_tail` (consumer-own) loaded Acquire — should be Relaxed.
+  - line 204 `output_ring_head` (producer-own) loaded Acquire — should be Relaxed.
+The Rust counterpart in rust/src/lockfree_queue.rs uses the canonical pattern: own=Relaxed, remote=Acquire, publish=Release. C++ was the outlier.
+**ORIENT**: not a correctness bug on x86 (Acquire is a no-op under TSO) but a real wasted barrier on Apple Silicon / ARM where Acquire maps to `ldar`. Two extra barriers per audio block × ~187 blocks/sec at 256 samples / 48kHz = ~374 wasted barriers/sec on the realtime thread.
+**DECIDE**: change own-index loads to Relaxed.
+**DEVIL**:
+  - *Correctness*: Acquire on a single-thread-owned variable is identical in semantics to Relaxed for that thread (program order subsumes any synchronization). Cross-thread, the consumer never reads the producer's own-index — only its publish-side load via the *remote* index, which is correctly Acquire. No regression possible.
+  - *Scope*: are there other ordering inconsistencies? `is_running.load(acquire)` at line 146 is correct (synchronizes with the main thread's Release stop). `sample_count.fetch_add(release)` at line 199 is over-strong if no consumer reads with Acquire, but correct, and not on a queue path. Keep them.
+  - *Priority*: priority-5 (performance cliff on a realtime thread). Not blocking, but cheap to fix and aligns with the documented SPSC contract — closes a divergence that would otherwise confuse anyone porting the engine to a new platform.
+**ACT**: relaxed both own-index loads. Commented the rationale inline so future readers see the SPSC contract.
+**Result**: 20/20 engine_smoke pass, fmt clean, clippy clean.

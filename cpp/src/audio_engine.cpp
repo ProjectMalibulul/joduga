@@ -150,7 +150,13 @@ static void audio_thread_main(AudioEngineImpl *e)
         // ── Drain param queue ────────────────────────────────────
         uint32_t num_params = 0;
         {
-            size_t tail = e->param_queue_tail->load(std::memory_order_acquire);
+            // Consumer-side SPSC pattern (mirrors Rust producer in
+            // rust/src/lockfree_queue.rs): own index = Relaxed,
+            // remote index = Acquire, publish-own = Release.
+            // The previous code loaded own-tail with Acquire, which
+            // is a wasted barrier on weakly-ordered targets (Apple
+            // Silicon / ARM map Acquire to `ldar`).
+            size_t tail = e->param_queue_tail->load(std::memory_order_relaxed);
             size_t head = e->param_queue_head->load(std::memory_order_acquire);
             uint32_t avail = (head >= tail)
                                  ? static_cast<uint32_t>(head - tail)
@@ -201,7 +207,11 @@ static void audio_thread_main(AudioEngineImpl *e)
         // ── Copy output to ring buffer ───────────────────────────
         if (e->output_ring_buffer && e->output_feeder_buffer >= 0)
         {
-            size_t oh = e->output_ring_head->load(std::memory_order_acquire);
+            // Producer-side SPSC pattern: own index (head) = Relaxed,
+            // remote index (tail, written by the cpal consumer) =
+            // Acquire, publish (head store) = Release. The previous
+            // load of our own head used Acquire — wasted on ARM.
+            size_t oh = e->output_ring_head->load(std::memory_order_relaxed);
             size_t ot = e->output_ring_tail->load(std::memory_order_acquire);
             uint32_t cap = e->output_ring_capacity;
             size_t used = (oh >= ot) ? (oh - ot) : (cap - ot + oh);
