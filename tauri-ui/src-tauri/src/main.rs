@@ -72,6 +72,26 @@ fn parse_engine_type(s: &str) -> Result<NodeType, String> {
     }
 }
 
+/// Resolve which incoming `EngineNodeInfo` represents the audio Output.
+///
+/// Fails fast on missing or duplicate Output nodes — the previous
+/// `unwrap_or_else(|| nodes.last()...)` fallback silently routed the
+/// engine to whatever happened to be the last node in the array, which
+/// after the loop-2 validate tightening would either crash with a
+/// confusing "node not found" or worse, succeed with the wrong source.
+fn resolve_output_node_id(nodes: &[EngineNodeInfo]) -> Result<u32, String> {
+    let mut found: Option<u32> = None;
+    for n in nodes {
+        if n.engine_type == "Output" {
+            if found.is_some() {
+                return Err("Multiple Output nodes — keep only one".into());
+            }
+            found = Some(n.id);
+        }
+    }
+    found.ok_or_else(|| "No Output node — add one to start the engine".into())
+}
+
 /// Open a cpal output stream that reads from the engine ring buffer.
 fn open_cpal_stream(ring: Arc<OutputRingBuffer>, sample_rate: u32) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
@@ -114,12 +134,8 @@ fn start_engine(
     }
     *guard = None;
 
-    // Find output node
-    let output_id = nodes
-        .iter()
-        .find(|n| n.engine_type == "Output")
-        .map(|n| n.id)
-        .unwrap_or_else(|| nodes.last().map(|n| n.id).unwrap_or(0));
+    // Find output node (fail fast on missing/duplicate)
+    let output_id = resolve_output_node_id(&nodes)?;
 
     // Build shadow graph
     let mut graph = ShadowGraph::new(output_id);
@@ -169,11 +185,11 @@ fn start_engine(
         }
         // Send mode-select param so the C++ node initialises to the right subtype
         let mode_hash: Option<u32> = match n.engine_type.as_str() {
-            "Oscillator" => Some(0xAD),
-            "Filter" => Some(0xBD),
-            "Gain" => Some(0xCF),
-            "Delay" => Some(0xCD),
-            "Effects" => Some(0xCE),
+            "Oscillator" => Some(joduga::param_hash::WAVEFORM_TYPE),
+            "Filter" => Some(joduga::param_hash::FILTER_MODE),
+            "Gain" => Some(joduga::param_hash::GAIN_MODE),
+            "Delay" => Some(joduga::param_hash::DELAY_MODE),
+            "Effects" => Some(joduga::param_hash::EFFECTS_MODE),
             _ => None,
         };
         if let Some(h) = mode_hash {
@@ -262,5 +278,36 @@ mod tests {
         assert!(parse_engine_type("").is_err());
         // Case-sensitive — "oscillator" is not "Oscillator"
         assert!(parse_engine_type("oscillator").is_err());
+    }
+
+    fn n(id: u32, engine_type: &str) -> EngineNodeInfo {
+        EngineNodeInfo {
+            id,
+            engine_type: engine_type.into(),
+            num_inputs: 0,
+            num_outputs: 0,
+            engine_subtype: 0,
+            params: vec![],
+        }
+    }
+
+    #[test]
+    fn resolve_output_picks_unique_output_node() {
+        let nodes = vec![n(0, "Oscillator"), n(7, "Output")];
+        assert_eq!(resolve_output_node_id(&nodes).unwrap(), 7);
+    }
+
+    #[test]
+    fn resolve_output_errors_when_missing() {
+        let nodes = vec![n(0, "Oscillator"), n(1, "Filter")];
+        let err = resolve_output_node_id(&nodes).unwrap_err();
+        assert!(err.contains("No Output node"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_output_errors_on_duplicate_outputs() {
+        let nodes = vec![n(0, "Output"), n(1, "Output")];
+        let err = resolve_output_node_id(&nodes).unwrap_err();
+        assert!(err.contains("Multiple Output"), "unexpected error: {err}");
     }
 }

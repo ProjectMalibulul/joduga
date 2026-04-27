@@ -1,13 +1,13 @@
-# Loop 8 candidate: tauri-ui mirror of the same Output-resolution bug
+# Loop 9 candidate: Rust-side smoke test for AudioEngineWrapper
 
-The tauri-ui's `src-tauri/src/main.rs` build_engine command has its own
-shadow graph construction and may have the same kind of latent bug as
-the egui-ui did pre-loop-7. Audit `start_engine_cmd` / `compile_graph`
-in tauri-ui/src-tauri/src for:
-- Whether output_node_id is derived from a real Output node.
-- Whether mode_hash dispatch is hardcoded (lift to param_hash).
-- Whether parse_engine_type's Result is fully handled now (loop 4).
+Boot a 1-block graph through AudioEngineWrapper, assert the output
+ring fills with non-zero samples (oscillator at known freq) and that
+cpu_load_permil advances. Tests the actual FFI and C++ engine path
+without requiring real audio hardware (cpal). Requires:
+- A test-only constructor or a way to drive the engine without cpal,
+  or pulling samples directly out of `output_ring()`.
+- Knowledge of how the engine populates the ring on its own thread.
 
-Backup candidate: Rust-side smoke test booting a 1-block graph through
-AudioEngineWrapper, asserting cpu_load_permil advances and the output
-ring fills with non-zero samples.
+Backup candidate: Extract the duplicated `resolve_output_node_id`
+helpers (egui + tauri) into a shared `joduga::output_resolver` module
+parameterised by a small trait so both call sites can reuse it.

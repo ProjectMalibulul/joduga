@@ -265,3 +265,40 @@ spot. Pick (a).
 
 **Verify:** cargo test --bins → 4/4 ui_main tests pass; lib still 19/19.
 fmt clean. clippy --all-targets -D warnings clean.
+
+## Loop 8 — tauri-ui: same Output-resolution + mode_hash drift as loop 7
+
+**Observe:** Audit of tauri-ui/src-tauri/src/main.rs::start_engine_cmd
+revealed the same two-bug pattern fixed in loop 7's egui-ui:
+1. `output_id = nodes.iter().find(|n| n.engine_type == "Output").map(|n| n.id).unwrap_or_else(|| nodes.last().map(|n| n.id).unwrap_or(0))`
+   silently substitutes "the last node" or "node id 0" when the user
+   forgets an Output. After loop-2's validate hardening this is either
+   a confusing graph error or — worse — an audio output reading from
+   an arbitrary non-Output node.
+2. mode_hash dispatch hardcoded as `0xAD/0xBD/0xCF/0xCD/0xCE` instead of
+   the loop-6 param_hash constants.
+
+**Decide:** Mirror loop 7 exactly — extract a `resolve_output_node_id`
+helper, fail fast on missing/duplicate, swap mode_hash to param_hash,
+add tests. Other candidates (extract one shared helper into the joduga
+crate; expose JS-facing error to the UI) would require introducing a
+shared types crate or touching the frontend, both higher-cost.
+
+**Devil's advocate:**
+- Correctness: helper is a near-clone of the egui-ui's; both fail with
+  the same human-readable strings so users see consistent errors.
+- Scope: the duplication is a smell — both helpers should eventually
+  live in one place. Lifting them needs a shared types crate (the input
+  shapes differ: GraphNode vs EngineNodeInfo). Logged as a future loop.
+- Priority: this is the user-visible Tauri start path; equal priority
+  to loop 7. Done now.
+
+**Act:** tauri-ui/src-tauri/src/main.rs:
+- New `resolve_output_node_id(&[EngineNodeInfo]) -> Result<u32, String>`.
+- start_engine_cmd uses it with `?`.
+- mode_hash literals lifted to `joduga::param_hash::*`.
+- 3 new unit tests; existing parse_engine_type tests untouched.
+
+**Verify:** cargo test --workspace → 28 tests (19 lib + 4 ui_main + 5
+tauri). cargo fmt --check + cargo clippy --workspace --all-targets
+-D warnings both green.
