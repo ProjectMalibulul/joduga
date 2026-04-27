@@ -609,3 +609,44 @@ validate_rejects_non_output_typed_sink.
 
 **Verify:** 29 lib + 5 ui_main + 3 smoke = 37 joduga tests. fmt +
 clippy clean.
+
+## Loop 18 — C++ audio_engine_init: defensive guards on FFI inputs
+
+**Observe:** Rust's ShadowGraph::validate now blocks malformed graphs
+(loop 17), but the C++ audio_engine_init() FFI is exposed as plain C
+ABI and may be embedded by other hosts. Today it null-checks only
+`graph` and `config`. Specifically:
+- output_node_id is stored without verifying it resolves to a node;
+  the per-block ring-feed lookup silently no-ops, producing permanent
+  silence with no diagnostic.
+- block_size could be 0 → empty scratch buffers, every node's
+  process() iterates 0 frames forever, again silent.
+- The lock-free queues use `(cap-1)` as a power-of-two mask; a
+  non-PoT capacity would wrap incorrectly and leak param/MIDI cmds.
+- `nodes`, `connections`, `execution_order` pointers could be null
+  while their counts are non-zero → segfault inside the init loop.
+
+**Decide:** Add 4 init-time guards before any heap allocation, returning
+nullptr with a stderr line for each. Add 2 Rust integration tests that
+bypass ShadowGraph and drive AudioEngineWrapper::new directly with
+malformed inputs.
+
+**Devil's advocate:**
+- Correctness: each guard runs once at boot, no audio-path cost. The
+  output_node_id check happens AFTER node_id_to_slot is built so it
+  catches both unknown ids and not-yet-created entries.
+- Scope: not a symptom fix — silent corruption is exactly what these
+  guards prevent. Loop 17 caught it on the Rust side; this catches it
+  at the same layer Rust calls into.
+- Priority: priority-1 silent-corruption / null-deref. Worth the
+  surface area added to the FFI contract.
+
+**Act:**
+- cpp/src/audio_engine.cpp: 4 guard blocks at top of audio_engine_init,
+  plus output_node_id resolution check after node map is built.
+- rust/tests/engine_smoke.rs: 2 new tests
+  (cpp_init_rejects_unresolved_output_node_id,
+   cpp_init_rejects_zero_block_size).
+
+**Verify:** cmake build clean. 29 lib + 5 ui_main + 5 smoke = 39 joduga
+tests pass. fmt + clippy clean.

@@ -1,10 +1,15 @@
-# Loop 18 candidate: enum-keyed BuiltinTemplate (deeper fix from loop 13)
+# Loop 19 candidate: audit the MIDI input path
 
-The string-name lookups in JodugaApp::new() are still fragile. Add a
-stable enum BuiltinTemplate { SineOscillator, LowPassFilter, Gain,
-SpeakerOutput, ... } used as the catalog key, with the name field
-remaining as the user-facing label.
+rust/src/midi_input.rs has not been touched by the agent loop yet.
+It feeds the lock-free MIDI queue that the C++ engine drains every
+block. Likely concerns to audit, in priority order:
+1. Does the MIDI parser handle malformed running-status messages?
+2. Is the queue write path lossy (drops on full) or back-pressured?
+   If lossy, is there a status_register counter for dropped events?
+3. Are unit tests covering parse → queue → drain end-to-end?
 
-Backup: audit cpp/src/audio_engine.cpp for malformed-input handling on
-audio_engine_init — pointer args nullable? Lengths zero? Pre-loop-5
-behavior when num_outputs=0 was ambiguous. Worth a defensive pass.
+Backup loop 19: enum-keyed BuiltinTemplate (carryover from loop 18 doc).
+
+Backup loop 20: assert cpu_load_permil advances under a heavy graph
+in a smoke test (currently the field exists in StatusRegister but no
+test verifies the C++ side actually populates it).

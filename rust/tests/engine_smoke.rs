@@ -236,3 +236,58 @@ fn filter_node_cutoff_attenuates_high_frequency_source() {
 
     eng.stop().expect("engine stop");
 }
+
+/// audio_engine_init must reject a CompiledGraph whose output_node_id
+/// doesn't resolve to any node in the graph. Without this guard the
+/// engine starts, the per-block ring-feed lookup silently fails, and
+/// the host hears permanent silence.
+///
+/// We bypass ShadowGraph::compile() (which would also catch this on
+/// the Rust side; see shadow_graph::validate_rejects_missing_output_node)
+/// and call AudioEngineWrapper::new directly to exercise the C++ guard.
+#[test]
+fn cpp_init_rejects_unresolved_output_node_id() {
+    let nodes = vec![joduga::ffi::NodeDesc {
+        node_id: 0,
+        node_type: NodeType::Oscillator,
+        num_inputs: 0,
+        num_outputs: 1,
+    }];
+    let edges: Vec<joduga::ffi::NodeConnection> = vec![];
+    let order = vec![0u32];
+
+    let res =
+        AudioEngineWrapper::new(nodes, edges, order, /*output_node_id=*/ 99, 48_000, 256, 0);
+    assert!(res.is_err(), "C++ init must reject output_node_id that doesn't resolve");
+}
+
+/// audio_engine_init must reject a config with block_size == 0; the
+/// scratch buffers would be empty and every node's process() call
+/// would still iterate over 0 frames, producing silence indefinitely.
+#[test]
+fn cpp_init_rejects_zero_block_size() {
+    let nodes = vec![
+        joduga::ffi::NodeDesc {
+            node_id: 0,
+            node_type: NodeType::Oscillator,
+            num_inputs: 0,
+            num_outputs: 1,
+        },
+        joduga::ffi::NodeDesc {
+            node_id: 1,
+            node_type: NodeType::Output,
+            num_inputs: 1,
+            num_outputs: 0,
+        },
+    ];
+    let edges = vec![joduga::ffi::NodeConnection {
+        from_node_id: 0,
+        from_output_idx: 0,
+        to_node_id: 1,
+        to_input_idx: 0,
+    }];
+    let order = vec![0u32, 1u32];
+
+    let res = AudioEngineWrapper::new(nodes, edges, order, 1, 48_000, /*block_size=*/ 0, 0);
+    assert!(res.is_err(), "C++ init must reject block_size == 0");
+}

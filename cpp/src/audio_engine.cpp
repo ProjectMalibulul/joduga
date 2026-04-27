@@ -269,6 +269,46 @@ extern "C"
             return nullptr;
         }
 
+        // Defensive sanity checks on the FFI inputs.  The Rust side
+        // (ShadowGraph::validate) already enforces these, but the engine
+        // is also exposed as a plain C ABI and may be linked against
+        // other hosts in the future; a malformed graph silently producing
+        // no audio (or, worse, dereferencing a null nodes pointer) is a
+        // priority-1 failure mode.
+        if (config->block_size == 0)
+        {
+            std::cerr << "[joduga] config->block_size is zero\n";
+            return nullptr;
+        }
+        if (graph->num_nodes > 0 && graph->nodes == nullptr)
+        {
+            std::cerr << "[joduga] graph->nodes is null but num_nodes > 0\n";
+            return nullptr;
+        }
+        if (graph->num_in_order > 0 && graph->execution_order == nullptr)
+        {
+            std::cerr << "[joduga] graph->execution_order is null but num_in_order > 0\n";
+            return nullptr;
+        }
+        if (graph->num_connections > 0 && graph->connections == nullptr)
+        {
+            std::cerr << "[joduga] graph->connections is null but num_connections > 0\n";
+            return nullptr;
+        }
+        // Lock-free queue index math uses (cap - 1) as a power-of-two mask.
+        // A non-power-of-two capacity would silently wrap incorrectly and
+        // leak commands.  Reject at boot rather than at runtime.
+        auto is_pow2_or_zero = [](uint32_t v) {
+            return v == 0 || (v & (v - 1)) == 0;
+        };
+        if (!is_pow2_or_zero(param_queue_capacity) ||
+            !is_pow2_or_zero(midi_queue_capacity) ||
+            !is_pow2_or_zero(output_ring_capacity))
+        {
+            std::cerr << "[joduga] queue capacities must be powers of two\n";
+            return nullptr;
+        }
+
         auto e = std::make_unique<AudioEngineImpl>();
         e->sample_rate = config->sample_rate;
         e->block_size = config->block_size;
@@ -291,6 +331,18 @@ extern "C"
         e->execution_order.assign(graph->execution_order,
                                   graph->execution_order + graph->num_in_order);
         e->output_node_id = graph->output_node_id;
+
+        // Reject graphs whose declared output_node_id wasn't created above.
+        // Without this check, the engine would still start, the per-block
+        // ring-feed lookup at line ~337 would silently fail, and the host
+        // would see an audio stream that runs but is permanently silent.
+        if (graph->num_nodes > 0 &&
+            e->node_id_to_slot.find(e->output_node_id) == e->node_id_to_slot.end())
+        {
+            std::cerr << "[joduga] output_node_id " << e->output_node_id
+                      << " is not present in graph->nodes\n";
+            return nullptr;
+        }
 
         // Pre-build slot-based connections for O(1) lookup in the audio thread
         for (uint32_t i = 0; i < graph->num_connections; ++i)
