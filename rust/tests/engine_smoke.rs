@@ -149,3 +149,90 @@ fn output_node_gain_param_silences_stream() {
 
     eng.stop().expect("engine stop");
 }
+
+/// End-to-end check that FilterNode dispatch is wired correctly. Builds
+/// Osc → Filter → Output; with the LP cutoff above the source frequency
+/// the filter is transparent, then drops the cutoff well below the
+/// source and asserts the throughput collapses. This exercises a third
+/// distinct param-hash dispatch path (FILTER_CUTOFF) and the multi-hop
+/// per-output-buffer routing introduced in loop 5.
+#[test]
+fn filter_node_cutoff_attenuates_high_frequency_source() {
+    let mut graph = ShadowGraph::new(2);
+    graph
+        .add_node(Node {
+            id: 0,
+            node_type: NodeType::Oscillator,
+            num_inputs: 0,
+            num_outputs: 1,
+            parameters: HashMap::new(),
+        })
+        .expect("add osc");
+    graph
+        .add_node(Node {
+            id: 1,
+            node_type: NodeType::Filter,
+            num_inputs: 1,
+            num_outputs: 1,
+            parameters: HashMap::new(),
+        })
+        .expect("add filter");
+    graph
+        .add_node(Node {
+            id: 2,
+            node_type: NodeType::Output,
+            num_inputs: 1,
+            num_outputs: 0,
+            parameters: HashMap::new(),
+        })
+        .expect("add output");
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .expect("connect osc->filter");
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .expect("connect filter->output");
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng =
+        AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("engine init");
+
+    // 8 kHz source — well-defined for both transparent and attenuated cases
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 8_000.0).expect("set osc freq");
+    // Lowpass mode (Mode::LP = 0), cutoff well above source — transparent
+    eng.set_param(1, param_hash::FILTER_MODE, 0.0).expect("set filter mode LP");
+    eng.set_param(1, param_hash::FILTER_CUTOFF, 20_000.0).expect("set high cutoff");
+    eng.start().expect("engine start");
+
+    // ── Window 1: cutoff above source ───────────────────────────────
+    thread::sleep(Duration::from_millis(120));
+    let ring = eng.output_ring();
+    let mut buf1 = vec![0.0_f32; 8192];
+    let n1 = ring.read(&mut buf1);
+    assert!(n1 > 0, "first window produced no samples");
+    let pass = buf1[..n1].iter().fold(0.0_f32, |acc, &s| acc.max(s.abs()));
+    assert!(pass > 0.05, "expected audible signal through transparent LP; got {pass}");
+
+    // Drop cutoff to 100 Hz — 8 kHz source is now ~80× above cutoff
+    eng.set_param(1, param_hash::FILTER_CUTOFF, 100.0).expect("set low cutoff");
+
+    // FilterNode smooths cutoff once per block at 5% of the gap, so
+    // convergence is ~0.107 s (1/(0.05 * 48000/256)). Wait ≥ 3× that
+    // to land near steady state, then discard the transient ring tail.
+    thread::sleep(Duration::from_millis(350));
+    let mut tail = vec![0.0_f32; 16384];
+    let _ = ring.read(&mut tail);
+
+    // ── Window 2: cutoff far below source ───────────────────────────
+    thread::sleep(Duration::from_millis(150));
+    let mut buf2 = vec![0.0_f32; 8192];
+    let n2 = ring.read(&mut buf2);
+    assert!(n2 > 0, "second window produced no samples");
+    let stop = buf2[..n2].iter().fold(0.0_f32, |acc, &s| acc.max(s.abs()));
+    assert!(
+        stop < pass * 0.25,
+        "low-cutoff LP did not attenuate 8 kHz source enough; pass={pass}, stop={stop}"
+    );
+
+    eng.stop().expect("engine stop");
+}

@@ -540,3 +540,40 @@ graph but mutates Output's GAIN_LEVEL and asserts amplitude collapse.
 
 **Verify:** 2/2 smoke tests pass (both ~110 ms wallclock). 28 lib +
 5 ui_main + 2 smoke = 35 joduga tests. fmt + clippy clean.
+
+## Loop 16 — End-to-end FilterNode dispatch + multi-hop routing test
+
+**Observe:** Loops 9 and 15 covered Oscillator and Gain set_param
+dispatch and a 2-node graph. FilterNode dispatch (FILTER_CUTOFF /
+FILTER_MODE / FILTER_RESONANCE / etc.) and any multi-hop routing
+through an interior node had zero tests. The multi-hop case directly
+exercises the per-output buffer offsets introduced in loop 5.
+
+**Decide:** Add a third smoke test: Osc(0) → Filter(1) → Output(2).
+Set OSC_FREQUENCY=8 kHz and FILTER_MODE=LP. With cutoff=20 kHz the
+filter is transparent; window 1 should be loud. Drop cutoff to 100 Hz,
+wait for the filter's per-block 5% smoother to converge (time constant
+~107 ms), and assert window 2 amplitude is < 25% of window 1. Three
+distinct dispatch paths now have behavioural coverage (OSC_FREQUENCY,
+GAIN_LEVEL, FILTER_CUTOFF) and the interior-node routing path has its
+first test.
+
+**Devil's advocate:**
+- Correctness: first attempt used 80 ms wait — the test failed
+  legitimately (stop=0.61, ~38% attenuation, filter still mid-transit).
+  Diagnosed: per-block 5% smoothing → 107 ms time constant. Increased
+  to 350 ms tail + 150 ms window (>4× time constant). Test now passes
+  comfortably under threshold.
+- Scope: doesn't cover Reverb/Delay/Effects, but those have many
+  parameters; one canonical filter param test per node type is the
+  right cadence for follow-up loops.
+- Priority: test gap on existing functionality (priority 3) — and
+  doubles as the first behavioural verification of loop 5's per-output
+  buffer routing.
+
+**Act:** rust/tests/engine_smoke.rs —
+filter_node_cutoff_attenuates_high_frequency_source. 3-node graph,
+sets and re-sets FILTER_CUTOFF mid-flight, asserts amplitude collapse.
+
+**Verify:** 3/3 smoke tests pass (~620 ms total wallclock). 28 lib +
+5 ui_main + 3 smoke = 36 joduga tests. fmt + clippy clean.

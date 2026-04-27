@@ -1,12 +1,13 @@
-# Loop 16 candidate: enum-keyed catalog (deeper fix from loop 13)
+# Loop 17 candidate: enum-keyed BuiltinTemplate (deeper fix from loop 13)
 
-The string-name lookups in JodugaApp::new() and elsewhere are fragile.
-Add a stable enum (BuiltinTemplate::SineOscillator etc.) used as the
-catalog key, with name-string lookup remaining for serialization. Then
-demo-graph construction can never silently miss a renamed template
-because the enum variant ties source code to the catalog at compile
-time.
+The string-name lookups in JodugaApp::new() are still fragile. Add a
+stable enum BuiltinTemplate { SineOscillator, LowPassFilter, Gain,
+SpeakerOutput, ... } used as the catalog key, with the name field
+remaining as the user-facing label. JodugaApp::new() then looks up by
+enum variant and silent renames are impossible.
 
-Backup: extend the Osc->Output smoke test to cover FilterNode params
-(FILTER_CUTOFF moves spectral content) — completes one more dispatch
-pathway.
+Backup: shadow_graph.rs::add_node currently doesn't validate that the
+output_node_id specified in ShadowGraph::new actually corresponds to
+an Output-type node when it's added. A user could pass an Oscillator
+node with id == output_node_id and the engine would receive a
+non-Output node as the sink. Audit and add validation.
