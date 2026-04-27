@@ -1,19 +1,18 @@
-# Loop 20 candidate: assert cpu_load_permil populates under load
+# Loop 21 candidate: audit cpp/include/nodes/*.h for descriptor-vs-node mismatches
 
-StatusRegister.cpu_load_permil is exposed via
-audio_engine_wrapper::cpu_load_permil() but no test verifies that the
-C++ engine actually populates it. Build a smoke test with a heavier
-graph (e.g. 3 oscillators + filter + reverb if available) and assert
-that after a few seconds of processing the field is > 0 and < 1000.
-Skip on CI runners where SCHED_FIFO note appears (already flagged in
-existing smoke tests).
+Loop 6 caught GainNode declaring num_outputs=1 in C++ while the
+NodeDesc descriptor said num_outputs=0. Likely sibling bugs in
+ReverbNode, DelayNode, EffectsNode where C++ ctor sets num_inputs/
+num_outputs but the JodugaApp catalog templates may declare different
+values. Audit by:
+1. Reading num_inputs/num_outputs in each cpp/include/nodes/*.h ctor.
+2. Greping rust/src/ui_main.rs catalog for matching node_type values.
+3. Asserting they agree, or aligning them.
 
-Backup loop 20: rate-limit the [midi] queue full log added in loop 19;
-or migrate it to a status_register counter if the FFI ABI bump is
-acceptable.
+Backup loop 21: rate-limit [midi] queue full log; or migrate it to a
+new status_register field if the FFI ABI bump is acceptable.
 
-Backup loop 21: enum-keyed BuiltinTemplate (carryover).
+Backup loop 22: enum-keyed BuiltinTemplate.
 
-Backup loop 22: audit cpp/include/nodes/*.h for the same num_inputs/
-num_outputs descriptor-vs-node disagreements that loop 6 caught for
-GainNode. Spot-check ReverbNode, DelayNode, EffectsNode.
+Backup loop 23: extend cpu_load_permil_advances_under_load to also
+verify graph_version_ref increments — currently nothing tests that.

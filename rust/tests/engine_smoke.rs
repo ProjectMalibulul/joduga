@@ -291,3 +291,42 @@ fn cpp_init_rejects_zero_block_size() {
     let res = AudioEngineWrapper::new(nodes, edges, order, 1, 48_000, /*block_size=*/ 0, 0);
     assert!(res.is_err(), "C++ init must reject block_size == 0");
 }
+
+/// status_register.cpu_load_permil must advance under a non-trivial
+/// graph load. The C++ engine measures per-block processing time and
+/// publishes (proc_ns * 1000 / block_ns) every block; a 4-node chain
+/// (Osc → Filter → Reverb → Output) is heavy enough to land above the
+/// per-mille rounding floor even on a fast CI runner.
+#[test]
+fn cpu_load_permil_advances_under_load() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(3);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Reverb, 1, 1)).unwrap();
+    graph.add_node(make_node(3, NodeType::Output, 1, 0)).unwrap();
+    for (a, b) in [(0u32, 1u32), (1, 2), (2, 3)] {
+        graph
+            .add_edge(Edge { from_node_id: a, from_output_idx: 0, to_node_id: b, to_input_idx: 0 })
+            .unwrap();
+    }
+
+    let (nodes, edges, order) = graph.compile().expect("compile heavy graph");
+    let mut eng =
+        AudioEngineWrapper::new(nodes, edges, order, 3, 48_000, 256, 0).expect("init heavy graph");
+    eng.start().expect("start");
+
+    // Give the engine enough wall time to populate at least a few
+    // blocks (256 / 48k ≈ 5.3 ms each); 200 ms ≈ 37 blocks.
+    thread::sleep(Duration::from_millis(200));
+
+    let load = eng.cpu_load_permil();
+    eng.stop().expect("stop");
+
+    // Must be > 0 (engine actually measured something) and below the
+    // 4000-permil cap that the C++ side clamps to.
+    assert!(load > 0 && load < 4000, "cpu_load_permil out of expected range: {load}");
+}

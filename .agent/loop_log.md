@@ -692,3 +692,32 @@ clean.
 stderr under sustained overload. A status_register.dropped_midi_count
 counter would be the right shape but requires touching the FFI ABI;
 deferred to a future loop.
+
+## Loop 20 — Smoke test: cpu_load_permil populates under load
+
+**Observe:** StatusRegister.cpu_load_permil is computed every block in
+audio_engine.cpp:225-229 and surfaced via cpu_load_permil() on the
+wrapper, but no test asserts the engine actually populates it. A
+silent breakage of this telemetry would only manifest as a flat UI
+load meter — easy to miss.
+
+**Decide:** Add a smoke test with a heavy enough graph (Osc → Filter →
+Reverb → Output) that proc_ns lands above the per-mille rounding floor
+even on a fast CI runner. Assert load > 0 && < 4000 (the C++-side
+clamp). Existing 1-osc test was deliberately weak per its own
+docstring; this one is the heavy counterpart.
+
+**Devil's advocate:**
+- Correctness: the assertion (0, 4000) is loose enough to cover both
+  fast and slow runners. Reverb has internal delay buffers so it's
+  guaranteed to do real work.
+- Scope: closes a test gap on existing functionality (priority 3).
+- Priority: telemetry is what users see when something is off; we
+  should know if the field stops updating.
+
+**Act:** rust/tests/engine_smoke.rs — added
+`cpu_load_permil_advances_under_load`, exercises 4-node chain through
+heaviest available DSP nodes.
+
+**Verify:** 38 lib + 5 ui_main + 6 smoke = 49 joduga tests pass. Ran
+in ~0.62 s including the 200 ms wall-time wait. fmt + clippy clean.
