@@ -114,8 +114,16 @@ impl ShadowGraph {
         Ok(())
     }
 
-    /// Validate acyclicity using DFS with proper HashMap-based colouring.
+    /// Validate the graph: output node existence and acyclicity.
     pub fn validate(&self) -> Result<(), String> {
+        // The C++ engine resolves output_node_id at init; if the id is not in
+        // the node map it sets output_feeder_slot = -1 and silently emits
+        // silence. Catch that here so the user gets an explicit error
+        // instead of a working "Play" button feeding nothing into the ring.
+        if !self.nodes.contains_key(&self.output_node_id) {
+            return Err(format!("Output node {} is not present in the graph", self.output_node_id));
+        }
+
         // white = unvisited, grey = in recursion stack, black = done
         let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
 
@@ -300,5 +308,30 @@ mod tests {
         let mut g = ShadowGraph::new(0);
         g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
         assert!(g.add_node(make_node(0, NodeType::Filter, 1, 1)).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_missing_output_node() {
+        // output_node_id = 99 but no such node exists.
+        let mut g = ShadowGraph::new(99);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g.validate().expect_err("missing output must fail");
+        assert!(err.contains("Output node 99"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_graph() {
+        // No nodes at all → output cannot exist.
+        let g = ShadowGraph::new(0);
+        assert!(g.validate().is_err());
+    }
+
+    #[test]
+    fn compile_rejects_missing_output_node() {
+        // compile() goes through validate(); the bad config must not reach the FFI.
+        let mut g = ShadowGraph::new(42);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        assert!(g.compile().is_err());
     }
 }

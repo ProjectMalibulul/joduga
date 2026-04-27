@@ -1,16 +1,22 @@
 # Next loop seed
 
-**Loop 2 target:** `ShadowGraph::validate` does not require `output_node_id`
-to exist as a node. Engine then sets `output_feeder_slot = -1` and emits
-silence with no error reported. Add validation:
+**Loop 3 candidates (priority order):**
 
-- In `rust/src/shadow_graph.rs::validate`, after existing checks, return
-  `Err` if `self.output_node_id` is set but not present in `self.nodes`.
-- Decide whether `output_node_id == 0` / unset is also rejected (probably
-  yes — a graph with no output is useless).
-- Add tests: missing output rejected; valid output passes.
-- Consider whether `compile` should also re-check, or rely on `validate`
-  being called first by `AudioEngineWrapper::start`.
+1. **Duplicate-edge rejection in `ShadowGraph::add_edge`.** Currently two
+   identical edges from (from_node, from_port) → (to_node, to_port) are
+   accepted; C++ then double-mixes the same source into the same input
+   slot, doubling level. Bootstrap issue #3.
+2. **`ui_main.rs::start_engine` output_node_id is `nodes.len()+1`.** Off-by-
+   one / wrong field — should be the id of the user-designated output node
+   (the egui UI doesn't currently expose one). Either pick the first node
+   whose engine_type == Output, or surface a proper "designate output"
+   action. Surfaced by loop 2.
+3. **`tauri-ui/src-tauri/src/main.rs::parse_engine_type`** silently maps
+   unknown strings to Gain. Bootstrap issue #4.
+4. C++ multi-output bug (latent): all `outputs[i]` for one node alias
+   `scratch_buffers[slot]`. Latent — no current node exercises it.
+5. Broader FFI ABI test coverage (NodeDesc / NodeConnection / CompiledGraph
+   alignment + field offsets).
 
-Open from loop 1: broader FFI ABI test coverage (NodeDesc / NodeConnection /
-CompiledGraph alignment + field-offset asserts) — logged, not blocking.
+Pick (1) — same priority bucket as loops 1/2 (silent wrong output),
+trivial scope, well-isolated, easy to test.
