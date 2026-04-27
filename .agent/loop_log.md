@@ -844,3 +844,30 @@ Result: 38 lib + 9 smoke + 5 ui_main = **52 tests pass**. fmt + clippy clean.
 
 Result: 38 lib + **10 smoke** + 5 ui_main = **53 tests pass**. fmt + clippy clean.
 
+
+## Loop 25 — Filter biquad state-explosion + FILTER_MODE NaN UB
+
+**OBSERVE**: 38 lib + 10 smoke at start. Audited `cpp/include/nodes/filter.h`.
+
+**ORIENT**: Two priority-1 silent-corruption issues:
+
+1. **State-explosion bug** in the DF-II-T biquad processing loop. The soft-clip clamped `y` to ±4.0 *after* using the unclipped `y` to update `z1`/`z2`. Under high resonance an unstable pole pair could drive state unboundedly while output looked clamped. Once z1/z2 reached non-finite values, every subsequent sample was poisoned (output stuck at NaN or alternating ±4 with NaN-coloured state). The comment "Soft-clip to prevent explosions at high resonance" was aspirational — the code didn't actually do that.
+
+2. **`mode = static_cast<int>(value)`** in `FILTER_MODE`'s set_param path with no NaN/Inf guard. Per the C++ standard, casting a non-finite or out-of-range float to int is *undefined behavior*. Rust callers passing `f32::NAN` or 1e9 through the param queue trip UB on the audio thread.
+
+**DECIDE**:
+1. Reorder the biquad inner loop: clip `y` *first*, then update z1/z2 with the clipped value. Add a NaN-recovery guard that scrubs z1/z2/y to zero if a non-finite slips in (so a single poisoned sample cannot lock the filter).
+2. In `FILTER_MODE`'s set_param branch: reject non-finite values and clamp the integer cast to `[0, VOWEL]`.
+
+**DEVIL'S ADVOCATE**:
+- *Correctness*: Clip-before-state changes filter behavior only when |y|>4 (already pathological — well outside any musical signal). NaN scrub is a one-sample glitch, far better than permanent silence/garbage. Mode clamp falls through to `default: case LP:` which the switch already handles. *No standing.*
+- *Scope*: Real root cause for unstable poles is sometimes the resonance ceiling itself (Q=30 is borderline for some modes); a deeper fix would be per-mode coefficient stability checks. State clamp is symptom mitigation matching the existing intent — defensible as the smallest correct fix. *Acknowledged, follow-up flagged in next.md.*
+- *Priority*: priority 1 (silent NaN/Inf in audio path → speaker damage candidate downstream). *No standing.*
+
+**ACT**:
+- `cpp/include/nodes/filter.h` set_param: NaN/range guard on FILTER_MODE.
+- `cpp/include/nodes/filter.h` process: reorder clip → state update; add `std::isfinite(z1) && std::isfinite(z2)` recovery scrub.
+- `rust/tests/engine_smoke.rs`: `filter_high_resonance_state_remains_bounded` (Osc 440 Hz → Filter LP cutoff=440 Q=30 → Output; verify finite + ≤4.0 + ε); `filter_mode_rejects_nan_and_out_of_range` (set FILTER_MODE = NaN, then 1e9; verify no crash, finite output).
+
+Result: 38 lib + **12 smoke** + 5 ui_main = **55 tests pass**. fmt + clippy clean.
+

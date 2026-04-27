@@ -1,19 +1,22 @@
-# Loop 25 candidate
+# Loop 26 candidate
 
-**Audit `cpp/include/nodes/filter.h` for the same priority-1 patterns.**
+**Audit `cpp/include/nodes/reverb.h` for NaN/Inf propagation and unbounded state.**
 
-After loops 17-24 the oscillator is hardened. The next-most-load-bearing
-DSP node is the filter (every realistic patch routes through it). Look for:
-1. Coefficient computation under extreme cutoff / Q values — does
-   `cos`/`tan` get NaN inputs? Are coefficients clamped to a stable
-   region of the bilinear transform?
-2. State-variable accumulators (z1/z2 for biquad, or integrator state
-   for SVF) — do they admit NaN/Inf if a single sample goes wild upstream?
-3. Parameter clamping on `CUTOFF`, `RESONANCE`, `FILTER_TYPE`.
-4. Out-of-range FILTER_TYPE subtypes — does the switch fall through to
-   silence or undefined behavior?
+Reverb networks (Schroeder, FDN, Freeverb) are notorious for unstable
+feedback loops when feedback coefficients approach 1.0 or when an
+upstream NaN slips into the comb/allpass delay buffers — once poisoned,
+the state never decays. After loop 25's filter NaN-recovery scrub, the
+reverb is the next-most-load-bearing node likely to suffer the same
+class of bug.
+
+Look for:
+1. Param clamping on `REVERB_*` (room size, damping, wet, dry, feedback).
+2. Output-mode `static_cast<int>(value)` UB on `REVERB_MODE` (same as filter).
+3. NaN recovery on delay-line state — does a single poisoned input stay forever?
+4. Per-sample explosion guards (soft clip vs. state clip — same bug class as loop 25).
 
 ## Backup loops
+- Filter resonance-Q ceiling per-mode (loop 25 follow-up — coefficient stability check before commit).
 - Carrier-phase `if`-wrap in oscillator.h (defense in depth — currently safe).
 - Rate-limit `[midi]` queue-full log (loop 19 follow-up).
 - Enum-keyed `BuiltinTemplate` for compile-time-checked catalog lookups.

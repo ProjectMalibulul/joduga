@@ -524,3 +524,107 @@ fn super_saw_with_extreme_detune_stays_bounded() {
 
     eng.stop().expect("engine stop");
 }
+
+/// Loop 25 regression: Filter biquad's soft-clip used to update the
+/// `z1`/`z2` state with the *unclipped* `y` before clamping the output
+/// sample. Under high resonance an unstable pole pair would let state
+/// grow without bound while the output looked clamped at ±4.0; once
+/// state went non-finite, every subsequent sample was poisoned. The
+/// fix reorders clip-then-state and adds a NaN-recovery scrub so a
+/// single poisoned sample cannot lock the filter into permanent
+/// silence-or-garbage.
+///
+/// This test drives an Osc → Filter → Output chain at maximum
+/// resonance (Q=30) tuned to the carrier and asserts that every output
+/// sample is finite and bounded by the soft-clip ceiling.
+#[test]
+fn filter_high_resonance_state_remains_bounded() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("init");
+
+    // Sweep the filter to its resonance ceiling and tune cutoff to the
+    // oscillator pitch so the unstable pole pair self-excites if state
+    // is ever unbounded.
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+    eng.set_param(1, param_hash::FILTER_CUTOFF, 440.0).expect("set cutoff");
+    eng.set_param(1, param_hash::FILTER_RESONANCE, 30.0).expect("set Q=30");
+
+    eng.start().expect("start");
+    thread::sleep(Duration::from_millis(120));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "no samples produced");
+
+    let mut max_abs = 0.0_f32;
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} non-finite ({s}) under Q=30");
+        max_abs = max_abs.max(s.abs());
+    }
+    // The biquad soft-clip caps |y| at 4.0; the output GainNode also
+    // attenuates by its target_gain (default 1.0) so 4.0 is the upper
+    // bound the test should ever observe.
+    assert!(max_abs <= 4.0 + 1e-3, "filter output exceeded soft-clip ceiling: {max_abs}");
+
+    eng.stop().expect("stop");
+}
+
+/// Loop 25 regression: `FILTER_MODE` was assigned via
+/// `mode = static_cast<int>(value)` with no NaN guard. Per the C++
+/// standard, casting a non-finite float to int is undefined behavior
+/// and could yield any int value (including ones that, while never
+/// matched in `compute_coefficients`'s switch, do trip its `default:`
+/// arm in surprising ways). The fix rejects non-finite values and
+/// clamps in-range integer modes; this test pins the no-crash
+/// contract.
+#[test]
+fn filter_mode_rejects_nan_and_out_of_range() {
+    fn make_node(id: u32, t: NodeType, inp: u32, out: u32) -> Node {
+        Node { id, node_type: t, num_inputs: inp, num_outputs: out, parameters: HashMap::new() }
+    }
+
+    let mut graph = ShadowGraph::new(2);
+    graph.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+    graph.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
+    graph.add_node(make_node(2, NodeType::Output, 1, 0)).unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+        .unwrap();
+    graph
+        .add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 2, to_input_idx: 0 })
+        .unwrap();
+    let (nodes, edges, order) = graph.compile().expect("compile");
+
+    let mut eng = AudioEngineWrapper::new(nodes, edges, order, 2, 48_000, 256, 0).expect("init");
+    eng.set_param(0, param_hash::OSC_FREQUENCY, 440.0).expect("set freq");
+    eng.set_param(1, param_hash::FILTER_MODE, f32::NAN).expect("set NaN mode");
+    eng.set_param(1, param_hash::FILTER_MODE, 1.0e9).expect("set huge mode");
+
+    eng.start().expect("start");
+    thread::sleep(Duration::from_millis(120));
+
+    let ring = eng.output_ring();
+    let mut buf = vec![0.0_f32; 8192];
+    let n = ring.read(&mut buf);
+    assert!(n > 0, "no samples after rogue FILTER_MODE values");
+    for (i, &s) in buf[..n].iter().enumerate() {
+        assert!(s.is_finite(), "sample {i} non-finite ({s}) after rogue FILTER_MODE");
+    }
+    eng.stop().expect("stop");
+}
