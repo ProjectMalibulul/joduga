@@ -1,13 +1,17 @@
-# Loop 9 candidate: Rust-side smoke test for AudioEngineWrapper
+# Loop 10 candidate: ABI-layout tests for NodeDesc / NodeConnection / CompiledGraph
 
-Boot a 1-block graph through AudioEngineWrapper, assert the output
-ring fills with non-zero samples (oscillator at known freq) and that
-cpu_load_permil advances. Tests the actual FFI and C++ engine path
-without requiring real audio hardware (cpal). Requires:
-- A test-only constructor or a way to drive the engine without cpal,
-  or pulling samples directly out of `output_ring()`.
-- Knowledge of how the engine populates the ring on its own thread.
+The lockfree_queue cmd structs got an alignment test in loop 1 but
+NodeDesc, NodeConnection, AudioEngineConfig, and CompiledGraph are also
+shared with C++ via FFI and have no test pinning their layout. A C++
+field reorder or Rust struct edit would silently break engine init
+(the new smoke test from loop 9 might catch some cases but not
+field-reorder bugs that still happen to give "valid" data).
 
-Backup candidate: Extract the duplicated `resolve_output_node_id`
-helpers (egui + tauri) into a shared `joduga::output_resolver` module
-parameterised by a small trait so both call sites can reuse it.
+Approach:
+- size_of and align_of asserts for each FFI struct.
+- offset_of asserts for each field (use std::mem::offset_of! — stable
+  in 1.77+).
+- Mirror with constexpr/static_assert on the C++ side if possible.
+
+Backup candidate: extract the duplicate resolve_output_node_id helpers
+into a shared module.

@@ -302,3 +302,47 @@ shared types crate or touching the frontend, both higher-cost.
 **Verify:** cargo test --workspace → 28 tests (19 lib + 4 ui_main + 5
 tauri). cargo fmt --check + cargo clippy --workspace --all-targets
 -D warnings both green.
+
+## Loop 9 — End-to-end C++ engine smoke test from Rust
+
+**Observe:** Until now every test was static — struct alignment, graph
+validation, slug parsing. The C++ DSP path itself (oscillator, filter,
+gain, output, scratch buffers) had zero automated coverage. Loop 5
+refactored the per-output scratch buffer layout and could only be
+verified by structural reasoning. Future C++ engine changes have the
+same blind spot.
+
+**Decide:** Three candidates: (a) integration test booting a 1-node
+oscillator → output graph through AudioEngineWrapper without cpal,
+asserting the ring fills with non-zero samples; (b) extract
+`resolve_output_node_id` duplication into a shared module; (c) add an
+ABI-layout test for NodeDesc / NodeConnection. (b) is cleanup. (c) is
+useful but lower-impact than (a) — without (a) we cannot detect
+engine-side regressions at all. Pick (a).
+
+**Devil's advocate:**
+- Correctness: AudioEngineWrapper exposes `output_ring()` (Arc<OutputRingBuffer>)
+  and `read()` is safe — same path cpal uses, just driven by a test
+  thread instead. `audio_engine_start` spawns the audio thread on its
+  own (verified in audio_engine.cpp), so we don't need cpal.
+- Scope: smoke test asserts only "ring fills + nonzero samples"; we
+  intentionally don't pin frequency or amplitude exactly because the
+  engine's internal oscillator amplitude is implementation-defined.
+  cpu_load_permil is also not asserted — too noisy on fast CIs.
+- Priority: this is the highest-impact test we can add with current
+  infrastructure. It also retroactively validates loops 5-8.
+
+**Act:** New `rust/tests/engine_smoke.rs` integration test:
+- Builds Osc(0) → Output(1) graph, validates, compiles.
+- Boots AudioEngineWrapper without cpal, sets osc freq via
+  param_hash::OSC_FREQUENCY, starts engine, sleeps 120 ms.
+- Reads from output_ring(), asserts at least one sample arrived and
+  max abs amplitude > 1e-4.
+- Re-tunes osc to verify the param queue stays drainable.
+- Drops engine (audio_engine_destroy via Drop).
+
+**Verify:** Test passes (took ~120 ms wallclock). Workspace test
+totals: 19 lib + 1 smoke + 4 ui_main + 5 tauri = 29. fmt + clippy
+--all-targets -D warnings clean. C++ engine actually produces
+non-zero samples through the new per-output buffer layout from loop 5
+— retroactive structural confirmation.
