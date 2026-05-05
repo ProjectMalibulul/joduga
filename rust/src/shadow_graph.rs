@@ -447,4 +447,158 @@ mod tests {
             assert_eq!(build().topological_sort().unwrap(), first);
         }
     }
+
+    /// Property-based check: for any randomly-generated DAG up to 32 nodes,
+    /// `topological_sort` must produce a permutation of all node IDs in which
+    /// every edge points strictly forward, and two consecutive calls on the
+    /// same graph must produce the same order (determinism).
+    ///
+    /// Uses a tiny in-tree LCG so we don't pull in `rand` as a dependency.
+    #[test]
+    fn topological_sort_property_random_dags() {
+        // Numerical Recipes LCG.
+        struct Lcg(u64);
+        impl Lcg {
+            fn next_u32(&mut self) -> u32 {
+                self.0 = self.0.wrapping_mul(1664525).wrapping_add(1013904223);
+                (self.0 >> 16) as u32
+            }
+            fn range(&mut self, n: u32) -> u32 {
+                if n == 0 {
+                    0
+                } else {
+                    self.next_u32() % n
+                }
+            }
+        }
+
+        for seed in 0u64..64 {
+            let mut rng = Lcg(seed.wrapping_mul(2_654_435_761) ^ 0xDEAD_BEEF);
+            let n_nodes: u32 = 2 + rng.range(31); // 2..=32 nodes
+            let mut g = ShadowGraph::new(n_nodes - 1);
+
+            // Each node has plenty of ports; the graph has at most 32 nodes
+            // so 32 ports per side is always enough.
+            for id in 0..n_nodes {
+                g.add_node(make_node(id, NodeType::Filter, 32, 32)).unwrap();
+            }
+
+            // Generate a DAG by only emitting edges from lower→higher IDs.
+            // Track which (to_node, to_input_idx) tuples are used to keep
+            // edges semantically valid; multiple edges into the same
+            // (node, input) would be fine for the topo property but make
+            // the generator simpler.
+            let n_edges = rng.range(n_nodes * 2);
+            let mut used: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+            let mut next_in_idx: HashMap<u32, u32> = HashMap::new();
+            for _ in 0..n_edges {
+                let from = rng.range(n_nodes - 1);
+                let to = from + 1 + rng.range(n_nodes - from - 1);
+                let in_idx = *next_in_idx.entry(to).or_insert(0);
+                if in_idx >= 32 || !used.insert((to, in_idx)) {
+                    continue;
+                }
+                next_in_idx.insert(to, in_idx + 1);
+                let out_idx = rng.range(32);
+                g.add_edge(Edge {
+                    from_node_id: from,
+                    from_output_idx: out_idx,
+                    to_node_id: to,
+                    to_input_idx: in_idx,
+                })
+                .unwrap();
+            }
+
+            let order = g
+                .topological_sort()
+                .unwrap_or_else(|e| panic!("seed {seed}: topo sort failed: {e}"));
+
+            // 1. Order is a permutation of all node IDs.
+            assert_eq!(order.len(), n_nodes as usize, "seed {seed}: missing nodes");
+            let mut sorted_order = order.clone();
+            sorted_order.sort_unstable();
+            let expected: Vec<u32> = (0..n_nodes).collect();
+            assert_eq!(sorted_order, expected, "seed {seed}: not a permutation");
+
+            // 2. Every edge points forward in the order.
+            let pos: HashMap<u32, usize> =
+                order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+            for e in &g.edges {
+                assert!(
+                    pos[&e.from_node_id] < pos[&e.to_node_id],
+                    "seed {seed}: edge {} -> {} violates topological order",
+                    e.from_node_id,
+                    e.to_node_id
+                );
+            }
+
+            // 3. Determinism: a second call on the same graph yields the
+            //    same order.
+            let order2 = g.topological_sort().unwrap();
+            assert_eq!(order, order2, "seed {seed}: non-deterministic order");
+        }
+    }
+
+    #[test]
+    fn remove_nonexistent_node() {
+        let mut g = ShadowGraph::new(0);
+        g.add_node(make_node(0, NodeType::Output, 0, 0)).unwrap();
+        let err = g.remove_node(42).unwrap_err();
+        assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn compile_emits_topologically_ordered_descs() {
+        // Build: 10 (osc) ─┐
+        //                  ├─► 30 (filter) ─► 99 (output)
+        // 20 (osc) ────────┘
+        let mut g = ShadowGraph::new(99);
+        g.add_node(make_node(10, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(20, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(30, NodeType::Filter, 2, 1)).unwrap();
+        g.add_node(make_node(99, NodeType::Output, 1, 0)).unwrap();
+        g.add_edge(Edge { from_node_id: 10, from_output_idx: 0, to_node_id: 30, to_input_idx: 0 })
+            .unwrap();
+        g.add_edge(Edge { from_node_id: 20, from_output_idx: 0, to_node_id: 30, to_input_idx: 1 })
+            .unwrap();
+        g.add_edge(Edge { from_node_id: 30, from_output_idx: 0, to_node_id: 99, to_input_idx: 0 })
+            .unwrap();
+
+        let (descs, conns, order) = g.compile().unwrap();
+
+        // Order is deterministic (sources sorted by ID, then 30, then 99).
+        assert_eq!(order, vec![10, 20, 30, 99]);
+        assert_eq!(descs.len(), 4);
+        // descs are emitted in exec_order — each desc's node_id must equal
+        // the order entry at the same position.
+        for (i, d) in descs.iter().enumerate() {
+            assert_eq!(d.node_id, order[i], "desc[{i}] node_id mismatch");
+        }
+        // Per-node type passthrough.
+        assert_eq!(descs[0].node_type, NodeType::Oscillator);
+        assert_eq!(descs[2].node_type, NodeType::Filter);
+        assert_eq!(descs[3].node_type, NodeType::Output);
+        // All edges round-trip into connections (count + content).
+        assert_eq!(conns.len(), 3);
+        let edge_set: std::collections::HashSet<(u32, u32, u32, u32)> = conns
+            .iter()
+            .map(|c| (c.from_node_id, c.from_output_idx, c.to_node_id, c.to_input_idx))
+            .collect();
+        assert!(edge_set.contains(&(10, 0, 30, 0)));
+        assert!(edge_set.contains(&(20, 0, 30, 1)));
+        assert!(edge_set.contains(&(30, 0, 99, 0)));
+    }
+
+    #[test]
+    fn compile_rejects_cycle() {
+        let mut g = ShadowGraph::new(0);
+        g.add_node(make_node(0, NodeType::Filter, 1, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+            .unwrap();
+        g.add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 0, to_input_idx: 0 })
+            .unwrap();
+        let err = g.compile().unwrap_err();
+        assert!(err.to_lowercase().contains("cycle"), "expected cycle error, got: {err}");
+    }
 }

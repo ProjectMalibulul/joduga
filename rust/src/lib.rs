@@ -19,4 +19,4 @@ pub use audio_engine_wrapper::{AudioEngineWrapper, OutputRingBuffer};
 pub use ffi::{AudioEngine, AudioEngineConfig, CompiledGraph, NodeConnection, NodeDesc, NodeType};
 pub use lockfree_queue::{LockFreeRingBuffer, MIDIEventCmd, ParamUpdateCmd, StatusRegister};
 pub use midi_input::MidiInputHandler;
-pub use shadow_graph::{Edge, Node, ShadowGraph};
+pub use shadow_graph::{Edge, Node, ShadowGraph, MAX_EDGES, MAX_NODES};
