@@ -133,10 +133,14 @@ mod tests {
         assert_eq!(size_of::<AudioEngineConfig>(), 12, "AudioEngineConfig size");
         assert_eq!(align_of::<AudioEngineConfig>(), 4, "AudioEngineConfig align");
 
-        // ParamUpdateCmd: alignas(16) on the C++ side; explicit u32 padding
-        // on the Rust side. Must be exactly 16 bytes, 16-byte aligned would
-        // be ideal but Rust's repr(C) on this layout gives 4-byte align —
-        // size match is what matters for queue indexing.
+        // ParamUpdateCmd: alignas(16) on the C++ side so it sits on a
+        // cache-line-friendly boundary inside the queue. Rust's repr(C)
+        // on the equivalent layout gives only 4-byte alignment because
+        // there is no Rust attribute equivalent to C++'s alignas(16) on
+        // the field set used here. Size match is what matters for the
+        // queue's slot stride; the C++ side never dereferences a Rust
+        // pointer to this struct directly, so the alignment mismatch is
+        // benign. We pin size only.
         assert_eq!(size_of::<ParamUpdateCmd>(), 16, "ParamUpdateCmd size");
 
         // MIDIEventCmd: 4× u32 → 16 bytes.

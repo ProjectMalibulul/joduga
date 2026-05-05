@@ -494,7 +494,9 @@ mod tests {
     /// Uses a tiny in-tree LCG so we don't pull in `rand` as a dependency.
     #[test]
     fn topological_sort_property_random_dags() {
-        // Numerical Recipes LCG.
+        // Numerical Recipes LCG (knuth_lcg). Constants 1664525 and
+        // 1013904223 are the canonical multiplier/increment from
+        // _Numerical Recipes in C_, 2nd ed. (1992), §7.1, table 7.1.
         struct Lcg(u64);
         impl Lcg {
             fn next_u32(&mut self) -> u32 {
@@ -511,6 +513,12 @@ mod tests {
         }
 
         for seed in 0u64..64 {
+            // Mix the loop counter through Knuth's golden-ratio multiplier
+            // (2_654_435_761 = floor(2^32 / phi)) and XOR with a fixed
+            // sentinel so each iteration starts from a well-separated LCG
+            // state — without mixing, a small `seed` produces a small first
+            // sample and the early iterations would explore a similar
+            // corner of the space.
             let mut rng = Lcg(seed.wrapping_mul(2_654_435_761) ^ 0xDEAD_BEEF);
             let n_nodes: u32 = 2 + rng.range(31); // 2..=32 nodes
             let mut g = ShadowGraph::new(n_nodes - 1);
