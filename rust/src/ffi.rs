@@ -133,18 +133,15 @@ mod tests {
         assert_eq!(size_of::<AudioEngineConfig>(), 12, "AudioEngineConfig size");
         assert_eq!(align_of::<AudioEngineConfig>(), 4, "AudioEngineConfig align");
 
-        // ParamUpdateCmd: alignas(16) on the C++ side so it sits on a
-        // cache-line-friendly boundary inside the queue. Rust's repr(C)
-        // on the equivalent layout gives only 4-byte alignment because
-        // there is no Rust attribute equivalent to C++'s alignas(16) on
-        // the field set used here. Size match is what matters for the
-        // queue's slot stride; the C++ side never dereferences a Rust
-        // pointer to this struct directly, so the alignment mismatch is
-        // benign. We pin size only.
+        // ParamUpdateCmd: must match the C++ alignas(16) contract because
+        // the engine forms typed pointers to queue storage and dereferences
+        // them directly.
         assert_eq!(size_of::<ParamUpdateCmd>(), 16, "ParamUpdateCmd size");
+        assert_eq!(align_of::<ParamUpdateCmd>(), 16, "ParamUpdateCmd align");
 
-        // MIDIEventCmd: 4× u32 → 16 bytes.
+        // MIDIEventCmd: must also match the C++ alignas(16) contract.
         assert_eq!(size_of::<MIDIEventCmd>(), 16, "MIDIEventCmd size");
+        assert_eq!(align_of::<MIDIEventCmd>(), 16, "MIDIEventCmd align");
 
         // StatusRegister: 2× AtomicU32 + [u32; 2] reserved → 16 bytes.
         // AtomicU32 has the same layout as u32.
