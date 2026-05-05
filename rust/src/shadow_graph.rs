@@ -100,20 +100,29 @@ impl ShadowGraph {
         Ok(())
     }
 
-    /// Validate acyclicity using DFS with proper HashMap-based colouring.
-    pub fn validate(&self) -> Result<(), String> {
-        // white = unvisited, grey = in recursion stack, black = done
-        let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
-
-        // Build adjacency list once
-        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    /// Build the adjacency list (`from_node_id` → list of `to_node_id`) once.
+    /// Shared by [`Self::validate`] and [`Self::topological_sort`] to avoid
+    /// quadratic re-scans of `self.edges`.
+    fn build_adjacency(&self) -> HashMap<u32, Vec<u32>> {
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::with_capacity(self.nodes.len());
         for e in &self.edges {
             adj.entry(e.from_node_id).or_default().push(e.to_node_id);
         }
+        adj
+    }
 
+    /// Validate acyclicity using DFS with proper HashMap-based colouring.
+    pub fn validate(&self) -> Result<(), String> {
+        let adj = self.build_adjacency();
+        self.validate_with_adj(&adj)
+    }
+
+    fn validate_with_adj(&self, adj: &HashMap<u32, Vec<u32>>) -> Result<(), String> {
+        // white = unvisited, grey = in recursion stack, black = done
+        let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
         for &id in self.nodes.keys() {
             if color[&id] == 0 {
-                Self::dfs_cycle(id, &adj, &mut color)?;
+                Self::dfs_cycle(id, adj, &mut color)?;
             }
         }
         Ok(())
@@ -139,9 +148,16 @@ impl ShadowGraph {
     }
 
     /// Kahn's algorithm — returns execution order as `Vec<u32>` of node IDs.
+    ///
+    /// Complexity: O(V + E). The adjacency list is built once and shared with
+    /// the cycle-detection pass.
     pub fn topological_sort(&self) -> Result<Vec<u32>, String> {
-        self.validate()?;
+        let adj = self.build_adjacency();
+        self.validate_with_adj(&adj)?;
+        self.topological_sort_with_adj(&adj)
+    }
 
+    fn topological_sort_with_adj(&self, adj: &HashMap<u32, Vec<u32>>) -> Result<Vec<u32>, String> {
         let mut in_degree: HashMap<u32, u32> = self.nodes.keys().map(|&id| (id, 0)).collect();
         for e in &self.edges {
             *in_degree.entry(e.to_node_id).or_default() += 1;
@@ -153,12 +169,12 @@ impl ShadowGraph {
         let mut result = Vec::with_capacity(self.nodes.len());
         while let Some(id) = queue.pop_front() {
             result.push(id);
-            for e in &self.edges {
-                if e.from_node_id == id {
-                    let d = in_degree.get_mut(&e.to_node_id).unwrap();
+            if let Some(neighbours) = adj.get(&id) {
+                for &next in neighbours {
+                    let d = in_degree.get_mut(&next).unwrap();
                     *d -= 1;
                     if *d == 0 {
-                        queue.push_back(e.to_node_id);
+                        queue.push_back(next);
                     }
                 }
             }
@@ -173,7 +189,9 @@ impl ShadowGraph {
     /// Compile into the C FFI structures.
     #[allow(clippy::type_complexity)]
     pub fn compile(&self) -> Result<(Vec<NodeDesc>, Vec<NodeConnection>, Vec<u32>), String> {
-        let exec_order = self.topological_sort()?;
+        let adj = self.build_adjacency();
+        self.validate_with_adj(&adj)?;
+        let exec_order = self.topological_sort_with_adj(&adj)?;
 
         let node_descs: Vec<NodeDesc> = exec_order
             .iter()
@@ -286,5 +304,55 @@ mod tests {
         let mut g = ShadowGraph::new(0);
         g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
         assert!(g.add_node(make_node(0, NodeType::Filter, 1, 1)).is_err());
+    }
+
+    #[test]
+    fn add_edge_unknown_source() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g
+            .add_edge(Edge { from_node_id: 99, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+            .unwrap_err();
+        assert!(err.contains("Source node"));
+    }
+
+    #[test]
+    fn add_edge_unknown_target() {
+        let mut g = ShadowGraph::new(0);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        let err = g
+            .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 99, to_input_idx: 0 })
+            .unwrap_err();
+        assert!(err.contains("Target node"));
+    }
+
+    #[test]
+    fn add_edge_output_idx_out_of_bounds() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g
+            .add_edge(Edge { from_node_id: 0, from_output_idx: 5, to_node_id: 1, to_input_idx: 0 })
+            .unwrap_err();
+        assert!(err.contains("outputs"));
+    }
+
+    #[test]
+    fn add_edge_input_idx_out_of_bounds() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g
+            .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 5 })
+            .unwrap_err();
+        assert!(err.contains("inputs"));
+    }
+
+    #[test]
+    fn remove_nonexistent_edge() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        assert!(g.remove_edge(0, 1).is_err());
     }
 }
