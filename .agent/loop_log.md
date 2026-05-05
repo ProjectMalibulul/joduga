@@ -129,3 +129,24 @@ Append-only record of every improvement loop. Newest entries at the bottom.
 - `cargo test -p joduga --release` → 25 passed, 0 failed (+3).
 
 **SEED FOR NEXT LOOP** → see `.agent/next.md` (rewritten).
+
+---
+
+## Loop 6 — 2026-05-05
+
+**OBSERVE**
+- 25 unit tests, 0 doc tests. `cargo test` runs `--doc` by default, so adding doc examples is free runtime smoke-coverage of the public API.
+
+**ORIENT**
+- The single highest-value place to anchor a doc example is the `shadow_graph` module — it's the public entry point for building a graph and produces the FFI payload the C++ engine consumes.
+
+**DECIDE**
+- Add a doc-tested example to `rust/src/shadow_graph.rs` covering the full happy path: `ShadowGraph::new` → `add_node` → `add_edge` → `compile`. Uses only the public API, no `tests`-only helpers.
+
+**ACT**
+- Added a runnable example at the top of `rust/src/shadow_graph.rs`. The example builds an osc→output graph and asserts `exec_order == [0, 1]`, `descs.len() == 2`, `conns.len() == 1`.
+
+**VERIFY**
+- `cargo fmt --all -- --check` ✅
+- `cargo clippy -p joduga --all-targets -- -D warnings` ✅
+- `cargo test -p joduga --release` → 25 unit passed + 4 doc-tests passed.

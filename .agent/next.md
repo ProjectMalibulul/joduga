@@ -20,7 +20,7 @@ This file is overwritten each loop. Read it at the start of the next OBSERVE ste
 
 5. **`remove_node` edge sweep**: assert the count of remaining edges after removing a hub node, and that the in-degree map is consistent on a subsequent `topological_sort`.
 
-6. **Doc tests**: add `///` examples to public APIs (`ShadowGraph::add_node`, `add_edge`, `compile`) so `cargo test --doc` provides additional smoke coverage.
+6. **More doc tests**: `ShadowGraph::add_node`, `add_edge`, and `topological_sort` could each carry a focused doc example. Loop 6 added the module-level example only.
 
 ## Resolved this loop
 

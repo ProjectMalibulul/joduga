@@ -3,6 +3,44 @@
 /// Used to validate the user-created graph (acyclicity, port bounds),
 /// topologically sort it (Kahn's algorithm), and compile it into the C FFI
 /// structures expected by the C++ engine.
+///
+/// # Example
+///
+/// ```
+/// use joduga::shadow_graph::{Edge, Node, ShadowGraph};
+/// use joduga::ffi::NodeType;
+/// use std::collections::HashMap;
+///
+/// let mut g = ShadowGraph::new(/*output_node_id=*/ 1);
+/// g.add_node(Node {
+///     id: 0,
+///     node_type: NodeType::Oscillator,
+///     num_inputs: 0,
+///     num_outputs: 1,
+///     parameters: HashMap::new(),
+/// })
+/// .unwrap();
+/// g.add_node(Node {
+///     id: 1,
+///     node_type: NodeType::Output,
+///     num_inputs: 1,
+///     num_outputs: 0,
+///     parameters: HashMap::new(),
+/// })
+/// .unwrap();
+/// g.add_edge(Edge {
+///     from_node_id: 0,
+///     from_output_idx: 0,
+///     to_node_id: 1,
+///     to_input_idx: 0,
+/// })
+/// .unwrap();
+///
+/// let (descs, conns, exec_order) = g.compile().unwrap();
+/// assert_eq!(exec_order, vec![0, 1]);
+/// assert_eq!(descs.len(), 2);
+/// assert_eq!(conns.len(), 1);
+/// ```
 use crate::ffi::{NodeConnection, NodeDesc, NodeType};
 use std::collections::{HashMap, VecDeque};
 
