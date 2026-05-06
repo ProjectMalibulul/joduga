@@ -3,6 +3,44 @@
 /// Used to validate the user-created graph (acyclicity, port bounds),
 /// topologically sort it (Kahn's algorithm), and compile it into the C FFI
 /// structures expected by the C++ engine.
+///
+/// # Example
+///
+/// ```
+/// use joduga::shadow_graph::{Edge, Node, ShadowGraph};
+/// use joduga::ffi::NodeType;
+/// use std::collections::HashMap;
+///
+/// let mut g = ShadowGraph::new(/*output_node_id=*/ 1);
+/// g.add_node(Node {
+///     id: 0,
+///     node_type: NodeType::Oscillator,
+///     num_inputs: 0,
+///     num_outputs: 1,
+///     parameters: HashMap::new(),
+/// })
+/// .unwrap();
+/// g.add_node(Node {
+///     id: 1,
+///     node_type: NodeType::Output,
+///     num_inputs: 1,
+///     num_outputs: 0,
+///     parameters: HashMap::new(),
+/// })
+/// .unwrap();
+/// g.add_edge(Edge {
+///     from_node_id: 0,
+///     from_output_idx: 0,
+///     to_node_id: 1,
+///     to_input_idx: 0,
+/// })
+/// .unwrap();
+///
+/// let (descs, conns, exec_order) = g.compile().unwrap();
+/// assert_eq!(exec_order, vec![0, 1]);
+/// assert_eq!(descs.len(), 2);
+/// assert_eq!(conns.len(), 1);
+/// ```
 use crate::ffi::{NodeConnection, NodeDesc, NodeType};
 use std::collections::{HashMap, VecDeque};
 
@@ -100,20 +138,36 @@ impl ShadowGraph {
         Ok(())
     }
 
-    /// Validate acyclicity using DFS with proper HashMap-based colouring.
-    pub fn validate(&self) -> Result<(), String> {
-        // white = unvisited, grey = in recursion stack, black = done
-        let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
-
-        // Build adjacency list once
-        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    /// Build the adjacency list (`from_node_id` → list of `to_node_id`) once.
+    /// Shared by [`Self::validate`] and [`Self::topological_sort`] to avoid
+    /// quadratic re-scans of `self.edges`.
+    ///
+    /// Each neighbour list is sorted by node ID so that downstream traversals
+    /// (notably Kahn's algorithm) produce a deterministic order independent
+    /// of `HashMap` iteration order.
+    fn build_adjacency(&self) -> HashMap<u32, Vec<u32>> {
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::with_capacity(self.nodes.len());
         for e in &self.edges {
             adj.entry(e.from_node_id).or_default().push(e.to_node_id);
         }
+        for neighbours in adj.values_mut() {
+            neighbours.sort_unstable();
+        }
+        adj
+    }
 
+    /// Validate acyclicity using DFS with proper HashMap-based colouring.
+    pub fn validate(&self) -> Result<(), String> {
+        let adj = self.build_adjacency();
+        self.validate_with_adj(&adj)
+    }
+
+    fn validate_with_adj(&self, adj: &HashMap<u32, Vec<u32>>) -> Result<(), String> {
+        // white = unvisited, grey = in recursion stack, black = done
+        let mut color: HashMap<u32, u8> = self.nodes.keys().map(|&id| (id, 0u8)).collect();
         for &id in self.nodes.keys() {
             if color[&id] == 0 {
-                Self::dfs_cycle(id, &adj, &mut color)?;
+                Self::dfs_cycle(id, adj, &mut color)?;
             }
         }
         Ok(())
@@ -139,26 +193,37 @@ impl ShadowGraph {
     }
 
     /// Kahn's algorithm — returns execution order as `Vec<u32>` of node IDs.
+    ///
+    /// Complexity: O(V + E). The adjacency list is built once and shared with
+    /// the cycle-detection pass.
     pub fn topological_sort(&self) -> Result<Vec<u32>, String> {
-        self.validate()?;
+        let adj = self.build_adjacency();
+        self.validate_with_adj(&adj)?;
+        self.topological_sort_with_adj(&adj)
+    }
 
+    fn topological_sort_with_adj(&self, adj: &HashMap<u32, Vec<u32>>) -> Result<Vec<u32>, String> {
         let mut in_degree: HashMap<u32, u32> = self.nodes.keys().map(|&id| (id, 0)).collect();
         for e in &self.edges {
             *in_degree.entry(e.to_node_id).or_default() += 1;
         }
 
-        let mut queue: VecDeque<u32> =
+        // Sort initial roots by ID so the output is deterministic across runs
+        // (HashMap iteration order is randomized).
+        let mut roots: Vec<u32> =
             in_degree.iter().filter(|(_, &d)| d == 0).map(|(&id, _)| id).collect();
+        roots.sort_unstable();
+        let mut queue: VecDeque<u32> = roots.into();
 
         let mut result = Vec::with_capacity(self.nodes.len());
         while let Some(id) = queue.pop_front() {
             result.push(id);
-            for e in &self.edges {
-                if e.from_node_id == id {
-                    let d = in_degree.get_mut(&e.to_node_id).unwrap();
+            if let Some(neighbours) = adj.get(&id) {
+                for &next in neighbours {
+                    let d = in_degree.get_mut(&next).unwrap();
                     *d -= 1;
                     if *d == 0 {
-                        queue.push_back(e.to_node_id);
+                        queue.push_back(next);
                     }
                 }
             }
@@ -173,7 +238,9 @@ impl ShadowGraph {
     /// Compile into the C FFI structures.
     #[allow(clippy::type_complexity)]
     pub fn compile(&self) -> Result<(Vec<NodeDesc>, Vec<NodeConnection>, Vec<u32>), String> {
-        let exec_order = self.topological_sort()?;
+        let adj = self.build_adjacency();
+        self.validate_with_adj(&adj)?;
+        let exec_order = self.topological_sort_with_adj(&adj)?;
 
         let node_descs: Vec<NodeDesc> = exec_order
             .iter()
@@ -286,5 +353,298 @@ mod tests {
         let mut g = ShadowGraph::new(0);
         g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
         assert!(g.add_node(make_node(0, NodeType::Filter, 1, 1)).is_err());
+    }
+
+    #[test]
+    fn add_edge_unknown_source() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g
+            .add_edge(Edge { from_node_id: 99, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+            .unwrap_err();
+        assert!(err.contains("Source node"));
+    }
+
+    #[test]
+    fn add_edge_unknown_target() {
+        let mut g = ShadowGraph::new(0);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        let err = g
+            .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 99, to_input_idx: 0 })
+            .unwrap_err();
+        assert!(err.contains("Target node"));
+    }
+
+    #[test]
+    fn add_edge_output_idx_out_of_bounds() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g
+            .add_edge(Edge { from_node_id: 0, from_output_idx: 5, to_node_id: 1, to_input_idx: 0 })
+            .unwrap_err();
+        assert!(err.contains("outputs"));
+    }
+
+    #[test]
+    fn add_edge_input_idx_out_of_bounds() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        let err = g
+            .add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 5 })
+            .unwrap_err();
+        assert!(err.contains("inputs"));
+    }
+
+    #[test]
+    fn remove_nonexistent_edge() {
+        let mut g = ShadowGraph::new(1);
+        g.add_node(make_node(0, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, 1, 0)).unwrap();
+        assert!(g.remove_edge(0, 1).is_err());
+    }
+
+    #[test]
+    fn max_nodes_limit_enforced() {
+        let mut g = ShadowGraph::new(0);
+        for id in 0..MAX_NODES as u32 {
+            g.add_node(make_node(id, NodeType::Filter, 1, 1)).unwrap();
+        }
+        let err = g.add_node(make_node(MAX_NODES as u32, NodeType::Filter, 1, 1)).unwrap_err();
+        assert!(err.contains("Maximum node count"));
+    }
+
+    #[test]
+    fn max_edges_limit_enforced() {
+        let mut g = ShadowGraph::new(0);
+        // Two nodes are enough; we just need MAX_EDGES + 1 add_edge calls.
+        // A node with many input/output ports avoids port-bound failures.
+        let ports = MAX_EDGES as u32 + 1;
+        g.add_node(make_node(0, NodeType::Oscillator, 0, ports)).unwrap();
+        g.add_node(make_node(1, NodeType::Output, ports, 0)).unwrap();
+        for i in 0..MAX_EDGES as u32 {
+            g.add_edge(Edge {
+                from_node_id: 0,
+                from_output_idx: i,
+                to_node_id: 1,
+                to_input_idx: i,
+            })
+            .unwrap();
+        }
+        let err = g
+            .add_edge(Edge {
+                from_node_id: 0,
+                from_output_idx: MAX_EDGES as u32,
+                to_node_id: 1,
+                to_input_idx: MAX_EDGES as u32,
+            })
+            .unwrap_err();
+        assert!(err.contains("Maximum edge count"));
+    }
+
+    #[test]
+    fn topological_sort_is_deterministic_with_siblings() {
+        // Two independent sources both feed a single sink. Without explicit
+        // sorting, HashMap iteration order would make the relative position
+        // of the sources non-deterministic across runs.
+        let build = || {
+            let mut g = ShadowGraph::new(99);
+            g.add_node(make_node(10, NodeType::Oscillator, 0, 1)).unwrap();
+            g.add_node(make_node(20, NodeType::Oscillator, 0, 1)).unwrap();
+            g.add_node(make_node(30, NodeType::Oscillator, 0, 1)).unwrap();
+            g.add_node(make_node(99, NodeType::Output, 3, 0)).unwrap();
+            g.add_edge(Edge {
+                from_node_id: 30,
+                from_output_idx: 0,
+                to_node_id: 99,
+                to_input_idx: 0,
+            })
+            .unwrap();
+            g.add_edge(Edge {
+                from_node_id: 10,
+                from_output_idx: 0,
+                to_node_id: 99,
+                to_input_idx: 1,
+            })
+            .unwrap();
+            g.add_edge(Edge {
+                from_node_id: 20,
+                from_output_idx: 0,
+                to_node_id: 99,
+                to_input_idx: 2,
+            })
+            .unwrap();
+            g
+        };
+        let first = build().topological_sort().unwrap();
+        // Roots (10, 20, 30) must appear in ascending ID order, then sink 99.
+        assert_eq!(first, vec![10, 20, 30, 99]);
+        // Repeated invocations on freshly built graphs must agree.
+        for _ in 0..32 {
+            assert_eq!(build().topological_sort().unwrap(), first);
+        }
+    }
+
+    /// Property-based check: for any randomly-generated DAG up to 32 nodes,
+    /// `topological_sort` must produce a permutation of all node IDs in which
+    /// every edge points strictly forward, and two consecutive calls on the
+    /// same graph must produce the same order (determinism).
+    ///
+    /// Uses a tiny in-tree LCG so we don't pull in `rand` as a dependency.
+    #[test]
+    fn topological_sort_property_random_dags() {
+        // Numerical Recipes LCG (knuth_lcg). Constants 1664525 and
+        // 1013904223 are the canonical multiplier/increment from
+        // _Numerical Recipes in C_, 2nd ed. (1992), §7.1, table 7.1.
+        struct Lcg(u64);
+        impl Lcg {
+            fn next_u32(&mut self) -> u32 {
+                self.0 = self.0.wrapping_mul(1664525).wrapping_add(1013904223);
+                (self.0 >> 16) as u32
+            }
+            fn range(&mut self, n: u32) -> u32 {
+                if n == 0 {
+                    0
+                } else {
+                    self.next_u32() % n
+                }
+            }
+        }
+
+        for seed in 0u64..64 {
+            // Mix the loop counter through Knuth's golden-ratio multiplier
+            // (2_654_435_761 = floor(2^32 / phi)) and XOR with a fixed
+            // sentinel so each iteration starts from a well-separated LCG
+            // state — without mixing, a small `seed` produces a small first
+            // sample and the early iterations would explore a similar
+            // corner of the space.
+            let mut rng = Lcg(seed.wrapping_mul(2_654_435_761) ^ 0xDEAD_BEEF);
+            let n_nodes: u32 = 2 + rng.range(31); // 2..=32 nodes
+            let mut g = ShadowGraph::new(n_nodes - 1);
+
+            // Each node has plenty of ports; the graph has at most 32 nodes
+            // so 32 ports per side is always enough.
+            for id in 0..n_nodes {
+                g.add_node(make_node(id, NodeType::Filter, 32, 32)).unwrap();
+            }
+
+            // Generate a DAG by only emitting edges from lower→higher IDs.
+            // Track which (to_node, to_input_idx) tuples are used to keep
+            // edges semantically valid; multiple edges into the same
+            // (node, input) would be fine for the topo property but make
+            // the generator simpler.
+            let n_edges = rng.range(n_nodes * 2);
+            let mut used: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+            let mut next_in_idx: HashMap<u32, u32> = HashMap::new();
+            for _ in 0..n_edges {
+                let from = rng.range(n_nodes - 1);
+                let to = from + 1 + rng.range(n_nodes - from - 1);
+                let in_idx = *next_in_idx.entry(to).or_insert(0);
+                if in_idx >= 32 || !used.insert((to, in_idx)) {
+                    continue;
+                }
+                next_in_idx.insert(to, in_idx + 1);
+                let out_idx = rng.range(32);
+                g.add_edge(Edge {
+                    from_node_id: from,
+                    from_output_idx: out_idx,
+                    to_node_id: to,
+                    to_input_idx: in_idx,
+                })
+                .unwrap();
+            }
+
+            let order = g
+                .topological_sort()
+                .unwrap_or_else(|e| panic!("seed {seed}: topo sort failed: {e}"));
+
+            // 1. Order is a permutation of all node IDs.
+            assert_eq!(order.len(), n_nodes as usize, "seed {seed}: missing nodes");
+            let mut sorted_order = order.clone();
+            sorted_order.sort_unstable();
+            let expected: Vec<u32> = (0..n_nodes).collect();
+            assert_eq!(sorted_order, expected, "seed {seed}: not a permutation");
+
+            // 2. Every edge points forward in the order.
+            let pos: HashMap<u32, usize> =
+                order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+            for e in &g.edges {
+                assert!(
+                    pos[&e.from_node_id] < pos[&e.to_node_id],
+                    "seed {seed}: edge {} -> {} violates topological order",
+                    e.from_node_id,
+                    e.to_node_id
+                );
+            }
+
+            // 3. Determinism: a second call on the same graph yields the
+            //    same order.
+            let order2 = g.topological_sort().unwrap();
+            assert_eq!(order, order2, "seed {seed}: non-deterministic order");
+        }
+    }
+
+    #[test]
+    fn remove_nonexistent_node() {
+        let mut g = ShadowGraph::new(0);
+        g.add_node(make_node(0, NodeType::Output, 0, 0)).unwrap();
+        let err = g.remove_node(42).unwrap_err();
+        assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn compile_emits_topologically_ordered_descs() {
+        // Build: 10 (osc) ─┐
+        //                  ├─► 30 (filter) ─► 99 (output)
+        // 20 (osc) ────────┘
+        let mut g = ShadowGraph::new(99);
+        g.add_node(make_node(10, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(20, NodeType::Oscillator, 0, 1)).unwrap();
+        g.add_node(make_node(30, NodeType::Filter, 2, 1)).unwrap();
+        g.add_node(make_node(99, NodeType::Output, 1, 0)).unwrap();
+        g.add_edge(Edge { from_node_id: 10, from_output_idx: 0, to_node_id: 30, to_input_idx: 0 })
+            .unwrap();
+        g.add_edge(Edge { from_node_id: 20, from_output_idx: 0, to_node_id: 30, to_input_idx: 1 })
+            .unwrap();
+        g.add_edge(Edge { from_node_id: 30, from_output_idx: 0, to_node_id: 99, to_input_idx: 0 })
+            .unwrap();
+
+        let (descs, conns, order) = g.compile().unwrap();
+
+        // Order is deterministic (sources sorted by ID, then 30, then 99).
+        assert_eq!(order, vec![10, 20, 30, 99]);
+        assert_eq!(descs.len(), 4);
+        // descs are emitted in exec_order — each desc's node_id must equal
+        // the order entry at the same position.
+        for (i, d) in descs.iter().enumerate() {
+            assert_eq!(d.node_id, order[i], "desc[{i}] node_id mismatch");
+        }
+        // Per-node type passthrough.
+        assert_eq!(descs[0].node_type, NodeType::Oscillator);
+        assert_eq!(descs[2].node_type, NodeType::Filter);
+        assert_eq!(descs[3].node_type, NodeType::Output);
+        // All edges round-trip into connections (count + content).
+        assert_eq!(conns.len(), 3);
+        let edge_set: std::collections::HashSet<(u32, u32, u32, u32)> = conns
+            .iter()
+            .map(|c| (c.from_node_id, c.from_output_idx, c.to_node_id, c.to_input_idx))
+            .collect();
+        assert!(edge_set.contains(&(10, 0, 30, 0)));
+        assert!(edge_set.contains(&(20, 0, 30, 1)));
+        assert!(edge_set.contains(&(30, 0, 99, 0)));
+    }
+
+    #[test]
+    fn compile_rejects_cycle() {
+        let mut g = ShadowGraph::new(0);
+        g.add_node(make_node(0, NodeType::Filter, 1, 1)).unwrap();
+        g.add_node(make_node(1, NodeType::Filter, 1, 1)).unwrap();
+        g.add_edge(Edge { from_node_id: 0, from_output_idx: 0, to_node_id: 1, to_input_idx: 0 })
+            .unwrap();
+        g.add_edge(Edge { from_node_id: 1, from_output_idx: 0, to_node_id: 0, to_input_idx: 0 })
+            .unwrap();
+        let err = g.compile().unwrap_err();
+        assert!(err.to_lowercase().contains("cycle"), "expected cycle error, got: {err}");
     }
 }

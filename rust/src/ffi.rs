@@ -112,4 +112,67 @@ mod tests {
         assert_eq!(NodeType::Delay as i32, 4);
         assert_eq!(NodeType::Effects as i32, 5);
     }
+
+    /// Verifies the Rust-side `repr(C)` layout matches the layout declared in
+    /// `cpp/include/audio_engine.h`. If the C++ header changes a field type
+    /// or order, this test will catch the divergence at `cargo test` time
+    /// rather than as silent UB at runtime across the FFI boundary.
+    #[test]
+    fn ffi_layout_matches_cpp() {
+        use std::mem::{align_of, size_of};
+
+        // NodeDesc: u32, enum (i32 ABI under repr(C)), u32, u32 → 16 bytes.
+        assert_eq!(size_of::<NodeDesc>(), 16, "NodeDesc size");
+        assert_eq!(align_of::<NodeDesc>(), 4, "NodeDesc align");
+
+        // NodeConnection: 4× u32 → 16 bytes.
+        assert_eq!(size_of::<NodeConnection>(), 16, "NodeConnection size");
+        assert_eq!(align_of::<NodeConnection>(), 4, "NodeConnection align");
+
+        // AudioEngineConfig: 3× u32 → 12 bytes (no padding).
+        assert_eq!(size_of::<AudioEngineConfig>(), 12, "AudioEngineConfig size");
+        assert_eq!(align_of::<AudioEngineConfig>(), 4, "AudioEngineConfig align");
+
+        // ParamUpdateCmd: must match the C++ alignas(16) contract because
+        // the engine forms typed pointers to queue storage and dereferences
+        // them directly.
+        assert_eq!(size_of::<ParamUpdateCmd>(), 16, "ParamUpdateCmd size");
+        assert_eq!(align_of::<ParamUpdateCmd>(), 16, "ParamUpdateCmd align");
+
+        // MIDIEventCmd: must also match the C++ alignas(16) contract.
+        assert_eq!(size_of::<MIDIEventCmd>(), 16, "MIDIEventCmd size");
+        assert_eq!(align_of::<MIDIEventCmd>(), 16, "MIDIEventCmd align");
+
+        // StatusRegister: 2× AtomicU32 + [u32; 2] reserved → 16 bytes.
+        // AtomicU32 has the same layout as u32.
+        assert_eq!(size_of::<StatusRegister>(), 16, "StatusRegister size");
+        assert_eq!(align_of::<StatusRegister>(), 4, "StatusRegister align");
+
+        // CompiledGraph layout sanity. We don't pin a numeric size (pointers
+        // are 8 bytes on 64-bit, 4 on 32-bit), but verify it is a multiple of
+        // pointer size and aligns to pointer-width.
+        assert_eq!(align_of::<CompiledGraph>(), align_of::<*const u8>(), "CompiledGraph align");
+        assert!(
+            size_of::<CompiledGraph>() >= 3 * size_of::<*const u8>() + 4 * size_of::<u32>(),
+            "CompiledGraph too small"
+        );
+
+        // NodeDesc field offsets (must match the C++ header field order).
+        let d =
+            NodeDesc { node_id: 0, node_type: NodeType::Oscillator, num_inputs: 0, num_outputs: 0 };
+        let base = &d as *const _ as usize;
+        assert_eq!(&d.node_id as *const _ as usize - base, 0);
+        assert_eq!(&d.node_type as *const _ as usize - base, 4);
+        assert_eq!(&d.num_inputs as *const _ as usize - base, 8);
+        assert_eq!(&d.num_outputs as *const _ as usize - base, 12);
+
+        // NodeConnection field offsets.
+        let c =
+            NodeConnection { from_node_id: 0, from_output_idx: 0, to_node_id: 0, to_input_idx: 0 };
+        let base = &c as *const _ as usize;
+        assert_eq!(&c.from_node_id as *const _ as usize - base, 0);
+        assert_eq!(&c.from_output_idx as *const _ as usize - base, 4);
+        assert_eq!(&c.to_node_id as *const _ as usize - base, 8);
+        assert_eq!(&c.to_input_idx as *const _ as usize - base, 12);
+    }
 }

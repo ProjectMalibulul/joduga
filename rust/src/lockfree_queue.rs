@@ -200,4 +200,45 @@ mod tests {
         q.dequeue(&mut out);
         assert_eq!(q.len(), 1);
     }
+
+    #[test]
+    fn spsc_stress_across_threads() {
+        // Producer (this test thread spawns a child as the producer, the
+        // current thread is the consumer). Sends N=200_000 sequential u32
+        // values; the consumer must observe every value exactly once and
+        // in order. This exercises the Acquire/Release synchronisation
+        // contract under real cross-thread interleaving.
+        const N: u32 = 200_000;
+        let q = Arc::new(LockFreeRingBuffer::<u32>::new(1024));
+
+        let producer_q = Arc::clone(&q);
+        let producer = std::thread::spawn(move || {
+            let mut next = 0u32;
+            while next < N {
+                if producer_q.enqueue(next).is_ok() {
+                    next += 1;
+                } else {
+                    // queue full — yield and retry
+                    std::thread::yield_now();
+                }
+            }
+        });
+
+        let mut received: u32 = 0;
+        let mut buf = [0u32; 64];
+        while received < N {
+            let n = q.dequeue(&mut buf);
+            if n == 0 {
+                std::thread::yield_now();
+                continue;
+            }
+            for slot in buf.iter().take(n) {
+                assert_eq!(*slot, received, "out-of-order or duplicated value");
+                received += 1;
+            }
+        }
+        producer.join().expect("producer panicked");
+        assert_eq!(received, N);
+        assert!(q.is_empty());
+    }
 }
